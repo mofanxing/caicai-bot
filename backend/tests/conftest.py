@@ -15,6 +15,7 @@ def client(tmp_path):
         app_env="test",
         admin_token=TOKEN,
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        speech_data_dir=str(tmp_path / "speech"),
         mock_llm_enabled=True,
         wechat_bridge_url="http://bridge.test",
         wechat_inbound_token="test-inbound",

@@ -1,4 +1,27 @@
 :root { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #243b35; background: #f6f7f4; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+.speech-engine { margin-bottom: 26px; }
+.speech-engine-header, .speech-engine-header > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.speech-engine-header { justify-content: space-between; margin-bottom: 14px; }
+.voice-workspace { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.15fr); gap: 26px; align-items: start; }
+.voice-list { display: grid; gap: 16px; }
+.voice-selected { border-color: #81ad78; box-shadow: 0 0 0 2px #81ad7812; }
+.voice-card-heading { display: flex; align-items: center; gap: 14px; }
+.voice-card-heading h3 { margin: 0 0 5px; overflow-wrap: anywhere; }
+.voice-card-heading .muted { font-size: 12px; }
+.voice-icon { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; background: #eef5e5; color: #608c57; font-size: 22px; border-radius: 12px; }
+.voice-style { margin: 18px 0; color: #728378; font-size: 12px; overflow-wrap: anywhere; }
+.voice-actions, .voice-presets { display: flex; flex-wrap: wrap; gap: 7px; }
+.voice-actions > button:last-child { margin-left: auto; }
+.voice-presets { margin-bottom: 15px; }
+.voice-presets .ant-btn { font-size: 11px; }
+.speech-player { width: 100%; min-width: 0; max-width: 480px; margin-top: 14px; }
+.speech-player audio, .voice-page audio { width: 100%; min-width: 0; }
+.speech-player > small { display: block; font-size: 10px; margin-top: 6px; }
+.speech-progress { display: flex; align-items: center; gap: 10px; color: #7c8f79; font-size: 12px; padding: 12px; background: #eef4e9; border-radius: 10px; }
+.speech-error { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #b37638; }
+.read-message { margin-top: 8px; color: #6c9665; }
+.voice-page input[type=file] { width: 100%; padding: 12px 0; }
+@media (max-width: 1050px) { .voice-workspace { grid-template-columns: 1fr; } }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 360px; }
 button, input, textarea { font: inherit; }

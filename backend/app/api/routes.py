@@ -5,7 +5,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import ServiceError
-from app.models import Conversation, Message, Provider
+from app.models import Conversation, Message, Provider, Voice
 from app.schemas import (
     ConversationCreate,
     ConversationRead,
@@ -46,7 +46,7 @@ def capabilities(request: Request):
         "llm": ["openai_compatible"],
         "debug_mock_enabled": request.app.state.settings.mock_llm_enabled,
         "wechat_personal": "bridge_contract_only",
-        "tts": "not_configured",
+        "tts": "local_voxcpm2",
         "asr": "not_configured",
     }
 
@@ -154,9 +154,14 @@ def set_conversation(
         conversation = find_conversation(db, conversation_id)
         if payload.provider_id:
             find_provider(db, payload.provider_id)
-        for key, value in payload.model_dump().items():
-            setattr(conversation, key, value)
-        db.commit()
+        with request.app.state.speech_service.guard:
+            if payload.voice_id and not db.get(Voice, payload.voice_id):
+                raise ServiceError("voice_not_found", "所选音色不存在，请重新选择", 404)
+            if conversation.channel != "debug" and payload.reply_mode != "text":
+                raise ServiceError("wechat_voice_not_supported", "微信语音投递尚未接入", 501)
+            for key, value in payload.model_dump().items():
+                setattr(conversation, key, value)
+            db.commit()
         return conversation
 
 
@@ -182,6 +187,7 @@ def find_debug_conversation(db, conversation_id: str):
 def clear_messages(conversation_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
         find_debug_conversation(db, conversation_id)
+        request.app.state.speech_service.clear_message_audio(db, conversation_id)
         removed = db.execute(delete(Message).where(Message.conversation_id == conversation_id))
         db.commit()
         return {"deleted_count": removed.rowcount}
@@ -194,6 +200,7 @@ def delete_message(conversation_id: str, message_id: str, request: Request, db=D
         message = db.get(Message, message_id)
         if not message or message.conversation_id != conversation_id:
             raise ServiceError("message_not_found", "该会话中不存在此条记录", 404)
+        request.app.state.speech_service.clear_message_audio(db, conversation_id, message_id)
         db.delete(message)
         db.commit()
         return {"deleted": True}
@@ -203,6 +210,7 @@ def delete_message(conversation_id: str, message_id: str, request: Request, db=D
 def delete_conversation(conversation_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
         conversation = find_debug_conversation(db, conversation_id)
+        request.app.state.speech_service.clear_message_audio(db, conversation_id)
         db.execute(delete(Message).where(Message.conversation_id == conversation_id))
         db.delete(conversation)
         db.commit()

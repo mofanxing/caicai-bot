@@ -11,9 +11,10 @@ import {
   SettingOutlined, SlidersOutlined, WechatOutlined,
 } from '@ant-design/icons';
 import { createApi, type Api } from './api';
-import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate } from './types';
+import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile } from './types';
+import { MessageSpeech, VoicesPage } from './speech';
 
-type Page = 'chat' | 'providers' | 'channels' | 'connection';
+type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
 const CONVERSATION_STORAGE = 'caicai.conversation';
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
@@ -41,8 +42,9 @@ function ConnectionForm({ initialToken, connecting, onConnect }: {
   </Form>;
 }
 
-function ModelSettings({ api, conversation, providers, capabilities, onSaved, disabled }: {
+function ModelSettings({ api, conversation, providers, voices, capabilities, onSaved, disabled }: {
   api: Api; conversation: Conversation; providers: Provider[]; capabilities: Capabilities;
+  voices: VoiceProfile[];
   onSaved: (value: Conversation) => void; disabled: boolean;
 }) {
   const { message } = AntApp.useApp();
@@ -53,11 +55,14 @@ function ModelSettings({ api, conversation, providers, capabilities, onSaved, di
   const [modelError, setModelError] = useState('');
   const [dirty, setDirty] = useState(false);
   const selectedProvider = Form.useWatch('provider_id', form);
+  const replyMode = Form.useWatch('reply_mode', form);
   const modelRequest = useRef(0);
 
   useEffect(() => {
     form.setFieldsValue({ provider_id: conversation.provider_id || '',
-      model_id: conversation.model_id || '', system_prompt: conversation.system_prompt });
+      model_id: conversation.model_id || '', system_prompt: conversation.system_prompt,
+      reply_mode: conversation.reply_mode, voice_id: conversation.voice_id || undefined,
+      voice_prompt: conversation.voice_prompt || '' });
     setDirty(false);
   }, [conversation, form]);
 
@@ -83,13 +88,15 @@ function ModelSettings({ api, conversation, providers, capabilities, onSaved, di
     } finally { if (requestId === modelRequest.current) setLoading(false); }
   }
 
-  async function save(values: { provider_id: string; model_id: string; system_prompt: string }) {
+  async function save(values: { provider_id: string; model_id: string; system_prompt: string;
+    reply_mode: 'text' | 'voice' | 'both'; voice_id?: string; voice_prompt?: string }) {
     setSaving(true);
     try {
       const updated = await api.settings(conversation.id, {
         provider_id: values.provider_id || null,
         model_id: values.provider_id ? values.model_id.trim() : null,
-        system_prompt: values.system_prompt, reply_mode: 'text', voice_id: null,
+        system_prompt: values.system_prompt, reply_mode: values.reply_mode,
+        voice_id: values.voice_id || null, voice_prompt: values.voice_prompt || '',
       });
       onSaved(updated); setDirty(false); message.success('聊天设置已保存');
     } catch (error) { message.error(errorText(error)); }
@@ -121,9 +128,16 @@ function ModelSettings({ api, conversation, providers, capabilities, onSaved, di
         <Input.TextArea rows={4} maxLength={16000} disabled={disabled || saving}
           placeholder="例如：你是菜菜，用简短、自然的语言与我聊天。" />
       </Form.Item>
-      <div className="setting-label">回复方式</div>
-      <div className="reply-options"><span className="reply-option active"><CheckOutlined /> 文字</span>
-        <Tooltip title="语音合成尚未接入"><span className="reply-option unavailable"><AudioOutlined /> 语音 · 待接入</span></Tooltip></div>
+      <Form.Item name="reply_mode" label="回复方式"><Select disabled={disabled || saving} options={[
+        { value: 'text', label: '文字（可手动朗读）' }, { value: 'both', label: '文字 + 本地语音' },
+      ]} /></Form.Item>
+      <Form.Item name="voice_id" label="朗读音色" rules={replyMode !== 'text' ? [{ required: true, message: '请先添加并选择音色' }] : []}>
+        <Select allowClear disabled={disabled || saving} placeholder="在音色与语音页面上传录音"
+          options={voices.map(voice => ({ value: voice.id, label: voice.name }))} />
+      </Form.Item>
+      <Form.Item name="voice_prompt" label="语音表达提示词"><Input.TextArea rows={2} maxLength={500}
+        disabled={disabled || saving} placeholder="留空跟随音色默认语气，例如：温柔自然，语速稍慢" /></Form.Item>
+      <p className="muted compact">语气控制发声，角色设定控制回复内容。语音后台生成，失败时保留文字；单次最多 600 字。</p>
       {dirty && <p className="unsaved">有未保存的修改，保存后新消息才会使用。</p>}
       <Button htmlType="submit" type="primary" block loading={saving} disabled={disabled}>保存聊天设置</Button>
     </Form>
@@ -268,6 +282,7 @@ export default function App() {
   const [connectionError, setConnectionError] = useState('');
   const [page, setPage] = useState<Page>('chat');
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [voices, setVoices] = useState<VoiceProfile[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [activeId, setActiveId] = useState('');
@@ -337,12 +352,13 @@ export default function App() {
     setConnecting(true); setConnectionError('');
     try {
       const nextApi = createApi(value);
-      const [caps, sites, chats] = await Promise.all([
-        nextApi.capabilities(), nextApi.providers(), nextApi.conversations(),
+      const [caps, sites, chats, voiceProfiles] = await Promise.all([
+        nextApi.capabilities(), nextApi.providers(), nextApi.conversations(), nextApi.voices(),
       ]);
       if (generation !== connectionRequest.current) return;
       setToken(value); sessionStorage.setItem(TOKEN_STORAGE, value);
       setCapabilities(caps); setProviders(sites); setConversations(chats);
+      setVoices(voiceProfiles);
       const saved = sessionStorage.getItem(CONVERSATION_STORAGE);
       setActiveId(chats.find(c => c.channel === 'debug' && c.id === saved)?.id
         || chats.find(c => c.channel === 'debug')?.id || '');
@@ -387,6 +403,7 @@ export default function App() {
     connectionRequest.current++; historyRequest.current++;
     sessionStorage.removeItem(TOKEN_STORAGE); sessionStorage.removeItem(CONVERSATION_STORAGE);
     setConnected(false); setToken(''); setHistory([]); setConversations([]); setProviders([]);
+    setVoices([]);
     setCapabilities(null); setActiveId(''); setConnectionError('');
   }
 
@@ -421,10 +438,16 @@ export default function App() {
     }
   }
 
+  async function refreshVoices() {
+    const [nextVoices, nextConversations] = await Promise.all([api.voices(), api.conversations()]);
+    setVoices(nextVoices); setConversations(nextConversations);
+  }
+
   const pageTitles: Record<Page, [string, string]> = {
-    chat: ['聊天测试', '先在这里聊一句，再把菜菜带到微信。'],
+    chat: ['聊天测试', '调好角色和音色，让每一句回应更亲近。'],
     providers: ['中转站管理', '一个工作台，连接不同的模型服务。'],
-    channels: ['微信与语音', '从网页对话，到熟悉的微信聊天。'],
+    voices: ['音色与语音', '熟悉的声音，在你的电脑上生成。'],
+    channels: ['微信接入', '微信能力后续接入，先在本地体验菜菜。'],
     connection: ['连接设置', '管理工作台与本地后端的连接。'],
   };
 
@@ -446,11 +469,11 @@ export default function App() {
     <div className="sidebar-label">工作空间</div><nav aria-label="主导航">
       {([
         ['chat', <CommentOutlined />, '聊天测试'], ['providers', <CloudServerOutlined />, '中转站管理'],
-        ['channels', <WechatOutlined />, '微信与语音'], ['connection', <SettingOutlined />, '连接设置'],
+        ['voices', <AudioOutlined />, '音色与语音'], ['channels', <WechatOutlined />, '微信接入'], ['connection', <SettingOutlined />, '连接设置'],
       ] as const).map(([key, icon, label]) => <button key={key} className={'nav-item ' + (page === key ? 'selected' : '')}
         aria-label={label} title={label} onClick={() => setPage(key)}>{icon}<span>{label}</span>{page === key && <i />}</button>)}
     </nav><div className="sidebar-note"><span className="sidebar-note-icon"><ExperimentOutlined /></span>
-      <strong>从一次对话开始</strong><p>先测试模型与角色，再接入微信和专属音色。</p><button onClick={() => setPage('chat')}>去聊天测试 <ArrowRightOutlined /></button></div>
+      <strong>让回应有熟悉的声音</strong><p>上传参考录音，在本机生成菜菜的专属声音。</p><button onClick={() => setPage('voices')}>去音色与语音 <ArrowRightOutlined /></button></div>
     <div className="sidebar-footer"><Badge status="success" text="本地后端已连接" /><span>开发工作台 · v0.1</span></div>
   </aside><main className="main-content"><header className="topbar"><div><div className="breadcrumb">工作空间 <span>/</span> {pageTitles[page][0]}</div>
     <h1>{pageTitles[page][0]}</h1><p>{pageTitles[page][1]}</p></div><div className="topbar-right"><span className="local-badge"><span /> 本地开发</span>
@@ -488,7 +511,8 @@ export default function App() {
               : <Button type="primary" icon={<PlusOutlined />} onClick={() => { setNewChatName('我的第一个会话'); setNewChatOpen(true); }}>创建第一个会话</Button>}
           </div>}
           {history.map(turn => <div className="chat-turn" key={turn.id}><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{turn.user_text}</div></div><Avatar>我</Avatar></div>
-            {turn.assistant_text && <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="message-content"><span>菜菜</span><div className="bubble">{turn.assistant_text}</div></div></div>}
+            {turn.assistant_text && <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="message-content"><span>菜菜</span><div className="bubble">{turn.assistant_text}</div>
+              <MessageSpeech api={api} conversationId={activeId} messageId={turn.id} initialJobId={turn.speech_job_id || null} canGenerate={!!active?.voice_id && !busy} /></div></div>}
             {!['completed', 'sent'].includes(turn.status) && <div className="message-status"><Tag color={turn.status === 'failed' ? 'error' : 'warning'}>{({ failed: '处理失败', delivery_unknown: '投递结果待核查', processing: '处理中，请刷新记录', sending: '发送结果待确认' } as Record<string, string>)[turn.status] || turn.status}</Tag></div>}
             <div className="turn-actions"><Button type="text" size="small" danger icon={<DeleteOutlined />}
               aria-label="删除这一轮对话" disabled={busy || historyLoading} onClick={() => confirmDelete('turn', turn.id)}>删除这轮对话</Button></div>
@@ -503,17 +527,19 @@ export default function App() {
           disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div>
       <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} 当前为网页测试，消息不会发送到微信。</div>
     </section><aside className="chat-settings">{active && capabilities ? <ModelSettings key={active.id} api={api} conversation={active}
-      providers={providers} capabilities={capabilities} disabled={busy} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
+      providers={providers} voices={voices} capabilities={capabilities} disabled={busy} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
       : <Card title={<><SlidersOutlined /> 聊天设置</>}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="创建会话后配置模型" /></Card>}
-      <div className="next-step-card"><span className="eyebrow">NEXT STEP</span><h3>把菜菜带到微信</h3><p>微信好友聊天与专属音色正在等待接入。先把文字对话调到你喜欢的样子。</p>
-        <button onClick={() => setPage('channels')}>查看接入进度 <ArrowRightOutlined /></button></div>
+      <div className="next-step-card"><span className="eyebrow">LOCAL VOICE</span><h3>先给菜菜一个声音</h3><p>上传熟悉的参考录音，试听不同语气，再为当前聊天选择音色。</p>
+        <button onClick={() => setPage('voices')}>管理本地音色 <ArrowRightOutlined /></button></div>
     </aside></div></div>}
 
-    {page === 'channels' && <div className="page-body"><div className="section-heading"><div><h2>下一站，在微信里见</h2><p>这里展示真实接入进度，尚未完成的功能暂不可操作。</p></div><Tag>能力预览</Tag></div>
+    {page === 'voices' && <VoicesPage api={api} voices={voices} onChanged={refreshVoices} />}
+
+    {page === 'channels' && <div className="page-body"><div className="section-heading"><div><h2>下一站，在微信里见</h2><p>微信接入安排在本地语音和桌宠之后。</p></div><Tag>能力预览</Tag></div>
       <div className="channel-grid"><Card><div className="channel-icon wechat"><WechatOutlined /></div><Tag color="gold">待接入</Tag><h2>普通微信好友聊天</h2><p>像和好友聊天一样，给菜菜发消息并收到回复。</p>
         <ul><li>已预留个人微信桥接接口</li><li>尚未实现扫码登录和真实消息收发</li><li>下一步验证好友文字与原生语音收发</li></ul><Button disabled block>微信登录 · 暂未开放</Button></Card>
-      <Card><div className="channel-icon voice"><AudioOutlined /></div><Tag>待接入</Tag><h2>专属音色回复</h2><p>上传参考录音或适配的音色模型，让回复更有温度。</p>
-        <ul><li>已预留语音合成与识别接口</li><li>尚未实现音色上传、模型加载及试听</li><li>当前仅支持文字回复</li></ul><Button disabled block>添加音色 · 暂未开放</Button></Card></div>
+      <Card><div className="channel-icon voice"><AudioOutlined /></div><Tag color="green">本地语音</Tag><h2>专属音色回复</h2><p>参考录音、本地合成、语气指令和试听在独立页面管理。</p>
+        <ul><li>音色管理与试听已开放</li><li>先安装本地模型，再生成语音</li><li>语音识别与微信语音投递后续接入</li></ul><Button block onClick={() => setPage('voices')}>打开音色与语音</Button></Card></div>
       <Alert type="info" showIcon message="现在可以测试什么？" description="添加中转站、选择模型、修改角色设定，并直接在「聊天测试」中验证文字回复。" />
     </div>}
 
@@ -524,7 +550,8 @@ export default function App() {
       <Button danger icon={<DisconnectOutlined />} disabled={busy || connecting} onClick={disconnect}>断开并清除令牌</Button>
     </Card><Card title="工作台能力"><div className="capability-row"><span>模型对话</span><Tag color="green">OpenAI 兼容</Tag></div>
       <div className="capability-row"><span>本地模拟回复</span><Tag color={capabilities?.debug_mock_enabled ? 'green' : 'default'}>{capabilities?.debug_mock_enabled ? '后端已开启' : '未开启'}</Tag></div>
-      <div className="capability-row"><span>微信 / 语音</span><Tag>待接入</Tag></div>
+      <div className="capability-row"><span>语音合成</span><Tag color="green">本地引擎 · 在音色页检查状态</Tag></div>
+      <div className="capability-row"><span>微信 / 语音识别</span><Tag>待接入</Tag></div>
       <p className="muted">令牌和 API Key 不会写入前端源码。后端环境文件不要提交到 Git。</p></Card></div>}
     <footer className="workspace-footer"><span>CAICAI BOT</span><span>一点智能，一点陪伴。</span></footer>
   </main><Modal title="新建测试会话" open={newChatOpen} confirmLoading={creating} okText="创建会话"

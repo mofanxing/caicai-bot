@@ -97,7 +97,7 @@ def test_provider_validation(client):
     )
 
 
-def test_settings_and_speech_placeholder(client):
+def test_settings_require_an_existing_voice_for_speech(client):
     cid = conversation(client)
     url = f"/api/v1/conversations/{cid}/settings"
     assert client.put(url, headers=HEADERS, json={"model_id": "x"}).status_code == 422
@@ -107,14 +107,10 @@ def test_settings_and_speech_placeholder(client):
         ).status_code
         == 404
     )
-    assert client.put(url, headers=HEADERS, json={"reply_mode": "voice"}).status_code == 200
-    result = client.post(
-        f"/api/v1/debug/conversations/{cid}/messages",
-        headers=HEADERS,
-        json={"external_id": "m1", "text": "你好"},
-    )
-    assert result.status_code == 501
-    assert result.json()["error"]["code"] == "tts_not_configured"
+    assert client.put(url, headers=HEADERS, json={"reply_mode": "both"}).status_code == 422
+    result = client.put(url, headers=HEADERS, json={"reply_mode": "both", "voice_id": "missing"})
+    assert result.status_code == 404
+    assert result.json()["error"]["code"] == "voice_not_found"
 
 
 def test_real_adapter_payload_and_context(client, monkeypatch):

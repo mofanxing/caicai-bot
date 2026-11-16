@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import (
@@ -79,12 +80,15 @@ class ConversationSettings(BaseModel):
     model_id: str | None = Field(default=None, max_length=200)
     reply_mode: Literal["text", "voice", "both"] = "text"
     voice_id: str | None = Field(default=None, max_length=200)
+    voice_prompt: str = Field(default="", max_length=500)
     system_prompt: str = Field(default="你是菜菜，一个友善自然的聊天助手。", max_length=16000)
 
     @model_validator(mode="after")
     def check_provider_model_pair(self):
         if bool(self.provider_id) != bool(self.model_id):
             raise ValueError("provider_id and model_id must be configured together")
+        if self.reply_mode != "text" and not self.voice_id:
+            raise ValueError("语音回复需要先选择音色")
         return self
 
 
@@ -113,3 +117,41 @@ class MessageRead(BaseModel):
     user_text: str
     assistant_text: str | None
     status: str
+    speech_job_id: str | None = None
+
+
+class VoiceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
+    reference_text: str
+    style_prompt: str
+    duration_seconds: float
+    created_at: datetime
+
+
+class SpeechPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=600)
+    style_prompt: str | None = Field(default=None, max_length=500)
+
+    @field_validator("text")
+    @classmethod
+    def nonempty_text(cls, value):
+        if not value.strip():
+            raise ValueError("请填写要合成的文字")
+        return value.strip()
+
+
+class SpeechJobRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    voice_id: str
+    message_id: str | None
+    text: str
+    style_prompt: str
+    status: str
+    error: str | None
+    duration_seconds: float | None
+    generation_seconds: float | None
+    created_at: datetime

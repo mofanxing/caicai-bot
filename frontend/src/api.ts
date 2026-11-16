@@ -1,4 +1,5 @@
-import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate } from './types';
+import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate,
+  VoiceProfile, SpeechStatus, SpeechJob } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code?: string) {
@@ -6,25 +7,27 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(token: string, path: string, init: RequestInit = {},
+  responseType: 'json' | 'blob' = 'json'): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 75000);
   try {
     const response = await fetch('/api/v1' + path, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        ...(init.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         ...init.headers,
         Authorization: 'Bearer ' + token,
       },
       signal: controller.signal,
     });
+    if (response.ok && responseType === 'blob') return await response.blob() as T;
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const error = payload?.error;
       const message = response.status === 401 ? '管理令牌不正确，请在连接设置中重新填写。'
-        : response.status === 422 ? '填写内容有误，请检查地址、模型名称等字段。'
-        : error?.message || '请求失败，请检查后端终端是否正常运行。';
+        : error?.message || (response.status === 422 ? '填写内容有误，请检查地址、模型名称等字段。'
+        : '请求失败，请检查后端终端是否正常运行。');
       throw new ApiError(message, response.status, error?.code);
     }
     if (payload === null) throw new ApiError('后端响应格式不正确，请确认连接的是菜菜 Bot 后端。', 502);
@@ -41,6 +44,24 @@ export async function request<T>(token: string, path: string, init: RequestInit 
 }
 
 export const createApi = (token: string) => ({
+  speechStatus: () => request<SpeechStatus>(token, '/speech/status'),
+  voices: () => request<VoiceProfile[]>(token, '/voices'),
+  uploadVoice: (body: FormData) => request<VoiceProfile>(token, '/voices', { method: 'POST', body }),
+  deleteVoice: (id: string) => request<{ deleted: boolean; affected_conversations: number }>(
+    token, '/voices/' + encodeURIComponent(id), { method: 'DELETE' }),
+  referenceAudio: (id: string) => request<Blob>(token, '/voices/' + encodeURIComponent(id) + '/reference', {}, 'blob'),
+  previewVoice: (id: string, text: string, stylePrompt: string) => request<SpeechJob>(
+    token, '/voices/' + encodeURIComponent(id) + '/previews', {
+      method: 'POST', body: JSON.stringify({ text, style_prompt: stylePrompt }),
+    }),
+  speechJob: (id: string) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id)),
+  speechJobs: () => request<SpeechJob[]>(token, '/speech/jobs'),
+  speechAudio: (id: string) => request<Blob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/audio', {}, 'blob'),
+  deleteSpeechJob: (id: string) => request<{ deleted: boolean }>(
+    token, '/speech/jobs/' + encodeURIComponent(id), { method: 'DELETE' }),
+  messageSpeech: (conversationId: string, messageId: string) => request<SpeechJob>(
+    token, '/conversations/' + encodeURIComponent(conversationId) + '/messages/'
+      + encodeURIComponent(messageId) + '/speech', { method: 'POST' }),
   capabilities: () => request<Capabilities>(token, '/capabilities'),
   providers: () => request<Provider[]>(token, '/providers'),
   addProvider: (payload: ProviderCreate) => request<Provider>(token, '/providers', {

@@ -4,6 +4,33 @@ import { ApiError, createApi, request } from './api';
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('backend API client', () => {
+  it('uploads multipart audio without overriding its boundary and authenticates blob reads', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'v1' })))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi('private-token');
+    const body = new FormData(); body.append('name', 'voice'); body.append('audio', new Blob(['wav']), 'ref.wav');
+    await api.uploadVoice(body);
+    expect(fetchMock.mock.calls[0][1].body).toBe(body);
+    expect(fetchMock.mock.calls[0][1].headers['Content-Type']).toBeUndefined();
+    const blob = await api.speechAudio('j1');
+    expect(blob.type).toBe('audio/wav');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/speech/jobs/j1/audio');
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer private-token');
+    expect(fetchMock.mock.calls[1][0]).not.toContain('private-token');
+  });
+
+  it('keeps voice style separate and retries only audio', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi('token');
+    await api.previewVoice('v1', '你好', '轻声慢说');
+    await api.messageSpeech('c1', 'm1');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ text: '你好', style_prompt: '轻声慢说' });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/conversations/c1/messages/m1/speech');
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST');
+  });
+
   it('submits provider keys only in request bodies and exposes no read-key method', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
     vi.stubGlobal('fetch', fetchMock);

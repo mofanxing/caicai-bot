@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -46,6 +46,7 @@ class Conversation(Base):
     model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     reply_mode: Mapped[str] = mapped_column(String(20), default="text")
     voice_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    voice_prompt: Mapped[str] = mapped_column(Text, default="")
     system_prompt: Mapped[str] = mapped_column(Text, default="你是菜菜，一个友善自然的聊天助手。")
 
 
@@ -59,6 +60,39 @@ class Message(Base):
     user_text: Mapped[str] = mapped_column(Text)
     assistant_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="processing")
+    speech_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class Voice(Base):
+    __tablename__ = "voices"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(100))
+    reference_text: Mapped[str] = mapped_column(Text, default="")
+    style_prompt: Mapped[str] = mapped_column(Text, default="")
+    duration_seconds: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class SpeechJob(Base):
+    __tablename__ = "speech_jobs"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    voice_id: Mapped[str] = mapped_column(ForeignKey("voices.id", ondelete="CASCADE"))
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    text: Mapped[str] = mapped_column(Text)
+    style_prompt: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    generation_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

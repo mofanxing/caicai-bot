@@ -10,15 +10,16 @@ from app.core.errors import ServiceError
 from app.core.secrets import SecretVault
 from app.integrations.llm import OpenAICompatibleClient
 from app.integrations.wechat import PersonalWechatBridge
-from app.models import Conversation, Message, Provider
+from app.models import Conversation, Message, Provider, Voice
 from app.schemas import IncomingMessage
 
 
 class ChatService:
-    def __init__(self, settings: Settings, vault: SecretVault | None = None):
+    def __init__(self, settings: Settings, vault: SecretVault | None = None, speech=None):
         self.settings = settings
         self.llm = OpenAICompatibleClient(settings.llm_timeout_seconds, vault)
         self.wechat = PersonalWechatBridge(settings)
+        self.speech = speech
         self._locks = {}
         self._locks_guard = Lock()
         self._provider_locks = {}
@@ -66,8 +67,10 @@ class ChatService:
         )
         if previous:
             return previous
-        if conversation.reply_mode != "text":
-            raise ServiceError("tts_not_configured", "语音服务尚未接入，请先使用文字模式", 501)
+        if conversation.reply_mode != "text" and conversation.channel != "debug":
+            raise ServiceError(
+                "wechat_voice_not_supported", "微信语音投递尚未接入，请使用文字模式", 501
+            )
         if conversation.channel == "wechat_personal":
             if not self.settings.wechat_bridge_url:
                 raise ServiceError("wechat_not_configured", "个人微信桥接服务未配置", 503)
@@ -136,6 +139,17 @@ class ChatService:
                 )
                 message.status = "sent"
                 db.commit()
+            if conversation.reply_mode != "text" and self.speech:
+                with self.speech.guard:
+                    voice = db.get(Voice, conversation.voice_id)
+                    if voice:
+                        self.speech.enqueue(
+                            db,
+                            voice,
+                            message.assistant_text,
+                            style_prompt=conversation.voice_prompt or None,
+                            message=message,
+                        )
             return message
         except ServiceError:
             message.status = "delivery_unknown" if message.status == "sending" else "failed"

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
@@ -18,6 +19,12 @@ class Settings(BaseSettings):
     wechat_bridge_url: str = ""
     wechat_inbound_token: SecretStr = SecretStr("")
     wechat_outbound_token: SecretStr = SecretStr("")
+    speech_data_dir: str = "./data/tts"
+    local_tts_python: str = str(Path(__file__).resolve().parents[2] / ".tts-venv/bin/python")
+    local_tts_model_dir: str = str(
+        Path(__file__).resolve().parents[2] / "data/tts/models/VoxCPM2-4bit"
+    )
+    local_tts_timeout_seconds: float = Field(default=600, ge=10, le=1800)
 
     @model_validator(mode="after")
     def validate_runtime(self):
