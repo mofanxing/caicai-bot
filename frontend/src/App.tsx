@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Avatar, Badge, Button, Card, Collapse,
-  Dropdown, Empty, Form, Input, Modal, Select, Skeleton, Tag, Tooltip,
+  Dropdown, Empty, Form, Input, Modal, Select, Skeleton, Spin, Tag, Tooltip,
 } from 'antd';
 import {
   ArrowRightOutlined, AudioOutlined, CheckCircleFilled, CheckOutlined, CloudServerOutlined,
@@ -17,6 +17,7 @@ import { MessageSpeech, VoicesPage } from './speech';
 type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
 const CONVERSATION_STORAGE = 'caicai.conversation';
+const PAGE_STORAGE = 'caicai.page';
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -277,10 +278,15 @@ function ProvidersPage({ api, providers, onAdded, onChanged, onRemoved, disabled
 export default function App() {
   const { message, modal } = AntApp.useApp();
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_STORAGE) || '');
+  const [restoring, setRestoring] = useState(() => !!token);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
-  const [page, setPage] = useState<Page>('chat');
+  const [page, setPage] = useState<Page>(() => {
+    const saved = sessionStorage.getItem(PAGE_STORAGE);
+    return saved === 'providers' || saved === 'voices' || saved === 'channels' || saved === 'connection'
+      ? saved : 'chat';
+  });
   const [providers, setProviders] = useState<Provider[]>([]);
   const [voices, setVoices] = useState<VoiceProfile[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -362,10 +368,12 @@ export default function App() {
       const saved = sessionStorage.getItem(CONVERSATION_STORAGE);
       setActiveId(chats.find(c => c.channel === 'debug' && c.id === saved)?.id
         || chats.find(c => c.channel === 'debug')?.id || '');
-      setConnected(true); setPage('chat');
+      setConnected(true);
     } catch (error) {
       if (generation === connectionRequest.current) { setConnectionError(errorText(error)); setConnected(false); }
-    } finally { if (generation === connectionRequest.current) setConnecting(false); }
+    } finally {
+      if (generation === connectionRequest.current) { setConnecting(false); setRestoring(false); }
+    }
   }
 
   useEffect(() => {
@@ -373,6 +381,10 @@ export default function App() {
     if (saved) void connect(saved);
     return () => { connectionRequest.current++; };
   }, []);
+
+  useEffect(() => {
+    if (connected) sessionStorage.setItem(PAGE_STORAGE, page);
+  }, [connected, page]);
 
   async function loadHistory(id: string) {
     const requestId = ++historyRequest.current;
@@ -402,6 +414,8 @@ export default function App() {
   function disconnect() {
     connectionRequest.current++; historyRequest.current++;
     sessionStorage.removeItem(TOKEN_STORAGE); sessionStorage.removeItem(CONVERSATION_STORAGE);
+    sessionStorage.removeItem(PAGE_STORAGE);
+    setRestoring(false); setConnecting(false); setPage('chat');
     setConnected(false); setToken(''); setHistory([]); setConversations([]); setProviders([]);
     setVoices([]);
     setCapabilities(null); setActiveId(''); setConnectionError('');
@@ -450,6 +464,10 @@ export default function App() {
     channels: ['微信接入', '微信能力后续接入，先在本地体验菜菜。'],
     connection: ['连接设置', '管理工作台与本地后端的连接。'],
   };
+
+  if (restoring) return <div className="session-loading" role="status" aria-live="polite" aria-busy="true">
+    <Spin size="large" /><p>正在恢复工作台连接…</p>
+  </div>;
 
   if (!connected) return <div className="welcome-screen"><div className="welcome-art">
     <Brand /><div className="welcome-copy"><span className="eyebrow">A LITTLE AI, A LITTLE COMPANY.</span>

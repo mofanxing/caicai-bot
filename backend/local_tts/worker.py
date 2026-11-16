@@ -15,19 +15,27 @@ def emit(payload):
 
 
 def segments(text, limit=120):
+    if limit < 1:
+        raise ValueError("Segment limit must be positive")
+    # Keep whole sentences together where possible. Only split an oversized
+    # sentence at a softer boundary before falling back to the hard limit.
     parts = re.split(r"(?<=[。！？；.!?;\n])", text)
     chunks, current = [], ""
     for part in parts:
-        while part:
-            available = limit - len(current)
-            current += part[:available]
-            part = part[available:]
-            if len(current) >= limit:
-                chunks.append(current)
-                current = ""
-        if len(current) >= limit // 2:
+        if not part:
+            continue
+        if current and len(current) + len(part) > limit:
             chunks.append(current)
             current = ""
+        while len(part) > limit:
+            boundaries = list(re.finditer(r"[，、,:：\s]", part[:limit]))
+            boundary = boundaries[-1].end() if boundaries else limit
+            # Avoid a very short leading fragment for an early comma.
+            if boundary < max(1, limit // 2):
+                boundary = limit
+            chunks.append(part[:boundary])
+            part = part[boundary:]
+        current += part
     if current.strip():
         chunks.append(current)
     return [chunk.strip() for chunk in chunks if chunk.strip()]
@@ -58,8 +66,10 @@ def main():
             start = time.monotonic()
             audio = []
             with redirect_stdout(sys.stderr):
-                mx.random.seed(42)
                 for chunk in segments(request["text"]):
+                    # Each independent generation starts from the same RNG state,
+                    # rather than depending on the previous segment's duration.
+                    mx.random.seed(42)
                     result = next(
                         model.generate(
                             text=chunk,

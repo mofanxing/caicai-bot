@@ -391,3 +391,33 @@ def test_sentence_chunks_preserve_text_with_a_bounded_size():
     chunks = segments(text)
     assert "".join(chunks) == text
     assert all(0 < len(chunk) <= 120 for chunk in chunks)
+
+
+def test_sentence_chunks_do_not_cut_a_sentence_that_fits_alone():
+    first = "甲" * 49 + "。"
+    second = "乙" * 79 + "。"
+    assert segments(first + second) == [first, second]
+
+
+def test_sentence_chunks_pack_short_sentences_to_reduce_restarts():
+    sentence = "甲" * 29 + "。"
+    assert segments(sentence * 4) == [sentence * 4]
+
+
+def test_sentence_chunks_prefer_a_comma_for_an_oversized_sentence():
+    first = "甲" * 89 + "，"
+    second = "乙" * 49 + "。"
+    assert segments(first + second) == [first, second]
+
+
+@pytest.mark.parametrize("limit", [1, 2, 17, 120])
+def test_sentence_chunks_handle_custom_limits_without_losing_content(limit):
+    text = "甲，乙。" * 75
+    chunks = segments(text, limit)
+    assert "".join(chunks) == text
+    assert all(0 < len(chunk) <= limit for chunk in chunks)
+
+
+def test_sentence_chunks_reject_an_invalid_limit():
+    with pytest.raises(ValueError, match="positive"):
+        segments("你好", 0)
