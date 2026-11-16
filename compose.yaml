@@ -1,0 +1,12 @@
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - caicai_data:/app/data
+    restart: unless-stopped
+volumes:
+  caicai_data:
+

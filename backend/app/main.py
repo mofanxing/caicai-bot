@@ -1,0 +1,67 @@
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from app.api.routes import router
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.secrets import SecretVault
+from app.db import create_session_factory
+from app.migrations import initialize_database
+from app.services.chat import ChatService
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    load_dotenv(override=False)
+    settings = settings or Settings()
+    engine, session_factory = create_session_factory(settings.database_url)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        initialize_database(engine)
+        yield
+        engine.dispose()
+
+    app = FastAPI(
+        title="Caicai Bot API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.app_env != "production" else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if settings.app_env != "production" else None,
+    )
+    app.state.settings = settings
+    app.state.session_factory = session_factory
+    app.state.secret_vault = SecretVault(settings)
+    app.state.chat_service = ChatService(settings, app.state.secret_vault)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        # Pydantic's default errors include raw request inputs, which may contain API keys.
+        errors = [
+            {"loc": error["loc"], "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": errors})
+
+    @app.exception_handler(ServiceError)
+    async def service_error_handler(request: Request, exc: ServiceError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
+    app.include_router(router)
+    return app

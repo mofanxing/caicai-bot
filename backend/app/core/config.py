@@ -1,0 +1,31 @@
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    app_env: Literal["development", "test", "production"] = "development"
+    admin_token: SecretStr = Field(min_length=32)
+    database_url: str = "sqlite:///./data/caicai.db"
+    mock_llm_enabled: bool = False
+    llm_timeout_seconds: float = Field(default=45, gt=0, le=180)
+    provider_encryption_key: SecretStr = SecretStr("")
+    provider_encryption_key_file: str = "./data/keys/provider.key"
+    wechat_bridge_url: str = ""
+    wechat_inbound_token: SecretStr = SecretStr("")
+    wechat_outbound_token: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def validate_runtime(self):
+        if self.app_env == "production" and self.mock_llm_enabled:
+            raise ValueError("MOCK_LLM_ENABLED must be false in production")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

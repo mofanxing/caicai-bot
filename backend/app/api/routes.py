@@ -1,0 +1,248 @@
+from secrets import compare_digest
+
+from fastapi import APIRouter, Depends, Header, Request
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
+
+from app.core.errors import ServiceError
+from app.models import Conversation, Message, Provider
+from app.schemas import (
+    ConversationCreate,
+    ConversationRead,
+    ConversationSettings,
+    IncomingMessage,
+    MessageRead,
+    ProviderCreate,
+    ProviderKeyUpdate,
+    ProviderRead,
+    WechatIncoming,
+)
+
+router = APIRouter()
+
+
+def get_db(request: Request):
+    with request.app.state.session_factory() as session:
+        yield session
+
+
+def require_admin(request: Request, authorization: str = Header(default="")):
+    expected = request.app.state.settings.admin_token.get_secret_value()
+    if not compare_digest(authorization.encode(), f"Bearer {expected}".encode()):
+        raise ServiceError("unauthorized", "需要有效的管理员令牌", 401)
+
+
+admin = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
+
+
+@router.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@admin.get("/capabilities")
+def capabilities(request: Request):
+    return {
+        "llm": ["openai_compatible"],
+        "debug_mock_enabled": request.app.state.settings.mock_llm_enabled,
+        "wechat_personal": "bridge_contract_only",
+        "tts": "not_configured",
+        "asr": "not_configured",
+    }
+
+
+@admin.post("/providers", response_model=ProviderRead, status_code=201)
+def create_provider(payload: ProviderCreate, request: Request, db=Depends(get_db)):
+    provider = Provider(
+        name=payload.name,
+        base_url=str(payload.base_url).rstrip("/"),
+        api_key_env=payload.api_key_env or "",
+        api_key_encrypted=(
+            request.app.state.secret_vault.encrypt(payload.api_key.get_secret_value())
+            if payload.api_key
+            else None
+        ),
+    )
+    db.add(provider)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ServiceError("provider_exists", "站点名称已存在", 409) from exc
+    return provider
+
+
+@admin.get("/providers", response_model=list[ProviderRead])
+def list_providers(db=Depends(get_db)):
+    return db.scalars(select(Provider).order_by(Provider.name)).all()
+
+
+@admin.get("/providers/{provider_id}/models")
+def list_models(provider_id: str, request: Request, db=Depends(get_db)):
+    with request.app.state.chat_service.provider_guard(provider_id):
+        provider = find_provider(db, provider_id)
+        return {"models": request.app.state.chat_service.llm.list_models(provider)}
+
+
+def find_provider(db, provider_id: str):
+    provider = db.get(Provider, provider_id)
+    if not provider:
+        raise ServiceError("provider_not_found", "中转站不存在", 404)
+    return provider
+
+
+@admin.put("/providers/{provider_id}/key", response_model=ProviderRead)
+def replace_provider_key(
+    provider_id: str, payload: ProviderKeyUpdate, request: Request, db=Depends(get_db)
+):
+    with request.app.state.chat_service.provider_guard(provider_id):
+        provider = find_provider(db, provider_id)
+        provider.api_key_encrypted = request.app.state.secret_vault.encrypt(
+            payload.api_key.get_secret_value()
+        )
+        provider.api_key_env = ""
+        db.commit()
+        request.app.state.chat_service.llm.forget_provider(provider_id)
+        return provider
+
+
+@admin.delete("/providers/{provider_id}")
+def delete_provider(provider_id: str, request: Request, db=Depends(get_db)):
+    with request.app.state.chat_service.provider_guard(provider_id):
+        provider = find_provider(db, provider_id)
+        affected = db.execute(
+            update(Conversation)
+            .where(Conversation.provider_id == provider_id)
+            .values(provider_id=None, model_id=None)
+        ).rowcount
+        db.delete(provider)
+        db.commit()
+        request.app.state.chat_service.llm.forget_provider(provider_id)
+        return {"deleted": True, "affected_conversations": affected}
+
+
+@admin.post("/conversations", response_model=ConversationRead, status_code=201)
+def create_conversation(payload: ConversationCreate, db=Depends(get_db)):
+    conversation = Conversation(**payload.model_dump())
+    db.add(conversation)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ServiceError("conversation_exists", "该账号与好友的会话已存在", 409) from exc
+    return conversation
+
+
+@admin.get("/conversations", response_model=list[ConversationRead])
+def list_conversations(db=Depends(get_db)):
+    return db.scalars(select(Conversation).order_by(Conversation.id)).all()
+
+
+def find_conversation(db, conversation_id: str):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise ServiceError("conversation_not_found", "会话不存在", 404)
+    return conversation
+
+
+@admin.put("/conversations/{conversation_id}/settings", response_model=ConversationRead)
+def set_conversation(
+    conversation_id: str, payload: ConversationSettings, request: Request, db=Depends(get_db)
+):
+    service = request.app.state.chat_service
+    with service.conversation_guard(conversation_id), service.provider_guard(payload.provider_id):
+        conversation = find_conversation(db, conversation_id)
+        if payload.provider_id:
+            find_provider(db, payload.provider_id)
+        for key, value in payload.model_dump().items():
+            setattr(conversation, key, value)
+        db.commit()
+        return conversation
+
+
+@admin.get("/conversations/{conversation_id}/messages", response_model=list[MessageRead])
+def get_messages(conversation_id: str, db=Depends(get_db)):
+    find_conversation(db, conversation_id)
+    return db.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(100)
+    ).all()
+
+
+def find_debug_conversation(db, conversation_id: str):
+    conversation = find_conversation(db, conversation_id)
+    if conversation.channel != "debug":
+        raise ServiceError("wrong_channel", "该删除操作只适用于测试会话", 409)
+    return conversation
+
+
+@admin.delete("/conversations/{conversation_id}/messages")
+def clear_messages(conversation_id: str, request: Request, db=Depends(get_db)):
+    with request.app.state.chat_service.conversation_guard(conversation_id):
+        find_debug_conversation(db, conversation_id)
+        removed = db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+        db.commit()
+        return {"deleted_count": removed.rowcount}
+
+
+@admin.delete("/conversations/{conversation_id}/messages/{message_id}")
+def delete_message(conversation_id: str, message_id: str, request: Request, db=Depends(get_db)):
+    with request.app.state.chat_service.conversation_guard(conversation_id):
+        find_debug_conversation(db, conversation_id)
+        message = db.get(Message, message_id)
+        if not message or message.conversation_id != conversation_id:
+            raise ServiceError("message_not_found", "该会话中不存在此条记录", 404)
+        db.delete(message)
+        db.commit()
+        return {"deleted": True}
+
+
+@admin.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, request: Request, db=Depends(get_db)):
+    with request.app.state.chat_service.conversation_guard(conversation_id):
+        conversation = find_debug_conversation(db, conversation_id)
+        db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+        db.delete(conversation)
+        db.commit()
+        return {"deleted": True}
+
+
+@admin.post("/debug/conversations/{conversation_id}/messages", response_model=MessageRead)
+def debug_message(
+    conversation_id: str, payload: IncomingMessage, request: Request, db=Depends(get_db)
+):
+    if request.app.state.settings.app_env == "production":
+        raise ServiceError("not_found", "接口不存在", 404)
+    conversation = find_conversation(db, conversation_id)
+    if conversation.channel != "debug":
+        raise ServiceError("wrong_channel", "调试接口只接受 debug 会话", 409)
+    return request.app.state.chat_service.handle(db, conversation, payload)
+
+
+def require_wechat_token(request: Request, authorization: str = Header(default="")):
+    expected = request.app.state.settings.wechat_inbound_token.get_secret_value()
+    if not expected or not compare_digest(authorization.encode(), f"Bearer {expected}".encode()):
+        raise ServiceError("unauthorized", "无效的微信桥接令牌", 401)
+
+
+@router.post(
+    "/api/v1/channels/wechat-personal/inbound",
+    response_model=MessageRead,
+    dependencies=[Depends(require_wechat_token)],
+)
+def wechat_inbound(payload: WechatIncoming, request: Request, db=Depends(get_db)):
+    conversation = db.scalar(
+        select(Conversation).where(
+            Conversation.channel == "wechat_personal",
+            Conversation.account_id == payload.account_id,
+            Conversation.peer_id == payload.peer_id,
+        )
+    )
+    if not conversation:
+        raise ServiceError("conversation_not_found", "请先创建并配置该好友会话", 404)
+    return request.app.state.chat_service.handle(db, conversation, payload)
+
+
+router.include_router(admin)

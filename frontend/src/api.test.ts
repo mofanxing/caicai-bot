@@ -1,0 +1,88 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError, createApi, request } from './api';
+
+afterEach(() => { vi.unstubAllGlobals(); });
+
+describe('backend API client', () => {
+  it('submits provider keys only in request bodies and exposes no read-key method', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi('token');
+    await api.addProvider({ name: 'demo', base_url: 'https://example.test/v1', api_key: 'private-canary' });
+    await api.replaceProviderKey('p1', 'replacement-canary');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/providers');
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).api_key).toBe('private-canary');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/providers/p1/key');
+    expect(fetchMock.mock.calls[1][1].method).toBe('PUT');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ api_key: 'replacement-canary' });
+    expect(Object.keys(api)).not.toContain('getProviderKey');
+  });
+
+  it('deletes the exact provider, turn, history or conversation requested', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi('token');
+    await api.deleteProvider('p1');
+    await api.deleteTurn('c1', 'm1');
+    await api.clearHistory('c1');
+    await api.deleteConversation('c1');
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1].method])).toEqual([
+      ['/api/v1/providers/p1', 'DELETE'],
+      ['/api/v1/conversations/c1/messages/m1', 'DELETE'],
+      ['/api/v1/conversations/c1/messages', 'DELETE'],
+      ['/api/v1/conversations/c1', 'DELETE'],
+    ]);
+  });
+
+  it('uses a same-origin URL and bearer header, not a query token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([])));
+    vi.stubGlobal('fetch', fetchMock);
+    await createApi('secret-token').providers();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/providers');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer secret-token');
+  });
+
+  it('creates only debug conversations from the testing UI', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'c1' })));
+    vi.stubGlobal('fetch', fetchMock);
+    await createApi('token').addConversation('我的会话');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      channel: 'debug', account_id: 'web', peer_id: '我的会话',
+    });
+  });
+
+  it('sends an explicit unique external ID for message deduplication', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed' })));
+    vi.stubGlobal('fetch', fetchMock);
+    await createApi('token').send('c1', '你好', 'unique-id');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/debug/conversations/c1/messages');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ text: '你好', external_id: 'unique-id' });
+  });
+
+  it('explains an invalid management token in Chinese', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
+    await expect(request('wrong', '/providers')).rejects.toThrow('管理令牌不正确');
+  });
+
+  it('preserves a backend business error without leaking input details', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'provider_key_missing', message: '中转站 API Key 未配置' },
+    }), { status: 409 })));
+    await expect(request('token', '/providers/p1/models')).rejects.toMatchObject({
+      status: 409, code: 'provider_key_missing', message: '中转站 API Key 未配置',
+    });
+  });
+
+  it('handles unavailable backend and non-JSON proxy responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    await expect(request('token', '/providers')).rejects.toThrow('无法连接后端');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('proxy error', { status: 500 })));
+    await expect(request('token', '/providers')).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('warns about ambiguous results when a request is aborted', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError')));
+    await expect(request('token', '/providers')).rejects.toThrow('请先刷新聊天记录');
+  });
+});
