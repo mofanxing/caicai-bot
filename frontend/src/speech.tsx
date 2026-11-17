@@ -5,6 +5,7 @@ import type { Api } from './api';
 import type { SpeechJob, SpeechStatus, VoiceProfile } from './types';
 import { prepareReference } from './audio';
 import { decodeSpeechAudio, prepareSpeechPlayback, SpeechPlayback } from './playback';
+import { reportAudioPlayback, reportSpeechWaiting } from './desktop';
 export { prepareSpeechPlayback } from './playback';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
@@ -31,7 +32,7 @@ export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | '
   }, [playerId]);
   useEffect(() => {
     const element = audio.current;
-    return () => { element?.pause(); element?.removeAttribute('src'); element?.load(); };
+    return () => { if (element) { reportAudioPlayback(element, false); element.pause(); element.removeAttribute('src'); element.load(); } };
   }, [url]);
   useEffect(() => {
     let disposed = false; let objectUrl = '';
@@ -48,7 +49,13 @@ export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | '
   }, [api, id, kind, generation]);
   if (error) return <div className="speech-error"><span>{error}</span>
     <Button size="small" onClick={() => setGeneration(value => value + 1)}>重新加载音频</Button></div>;
-  return url ? <audio ref={audio} controls preload="metadata" src={url} onPlay={() => announcePlayback(playerId)} aria-label={kind === 'reference' ? '参考录音' : '合成语音'} />
+  return url ? <audio ref={audio} controls preload="metadata" src={url} onPlay={() => announcePlayback(playerId)}
+    onPlaying={event => reportAudioPlayback(event.currentTarget, true)}
+    onPause={event => reportAudioPlayback(event.currentTarget, false)}
+    onEnded={event => reportAudioPlayback(event.currentTarget, false)}
+    onWaiting={event => reportAudioPlayback(event.currentTarget, false)}
+    onError={event => reportAudioPlayback(event.currentTarget, false)}
+    aria-label={kind === 'reference' ? '参考录音' : '合成语音'} />
     : <span className="muted"><Spin size="small" /> 正在读取本地音频…</span>;
 }
 
@@ -110,6 +117,10 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
   const currentId = jobIds[index];
   const job = jobs[currentId];
   const complete = !streaming && index >= jobIds.length;
+  useEffect(() => {
+    reportSpeechWaiting(playerId, playing && buffering && !complete && !error && job?.status !== 'failed');
+    return () => reportSpeechWaiting(playerId, false);
+  }, [playerId, playing, buffering, complete, error, job?.status]);
   const completedJobs = jobIds.map(id => jobs[id]).filter(item => item?.status === 'completed');
   const totalDuration = completedJobs.reduce((sum, item) => sum + (item.duration_seconds || 0), 0);
   const totalGeneration = completedJobs.reduce((sum, item) => sum + (item.generation_seconds || 0), 0);

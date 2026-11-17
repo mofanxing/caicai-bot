@@ -13,11 +13,13 @@ import {
 import { createApi, type Api } from './api';
 import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile } from './types';
 import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
+import { chatChannel, desktopHeaders, isDesktop, reportDesktopState } from './desktop';
 
 type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
 const CONVERSATION_STORAGE = 'caicai.conversation';
 const PAGE_STORAGE = 'caicai.page';
+const CONVERSATION_LABEL = isDesktop ? '桌面会话' : '测试会话';
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -312,7 +314,7 @@ export default function App() {
   const sendLock = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const api = useMemo(() => createApi(token), [token]);
-  const debugConversations = conversations.filter(c => c.channel === 'debug');
+  const debugConversations = conversations.filter(c => c.channel === chatChannel);
   const active = debugConversations.find(c => c.id === activeId);
   const activeProvider = providers.find(p => p.id === active?.provider_id);
   const busy = sending || deleting;
@@ -328,8 +330,8 @@ export default function App() {
     const selected = active;
     const labels = {
       turn: ['删除这一轮对话？', '该条提问及回答会一起删除，也不再用于后续聊天上下文。'],
-      history: ['清空当前聊天记录？', '将删除该测试会话的全部提问与回答，保留会话及模型设置，并重置聊天上下文。'],
-      conversation: ['删除测试会话「' + selected.peer_id + '」？', '将删除该测试会话、设置及全部聊天记录。'],
+      history: ['清空当前聊天记录？', '将删除该会话的全部提问与回答，保留会话及模型设置，并重置聊天上下文。'],
+      conversation: ['删除' + CONVERSATION_LABEL + '「' + selected.peer_id + '」？', '将删除该会话、设置及全部聊天记录。'],
     };
     modal.confirm({ title: labels[kind][0], content: labels[kind][1] + ' 此操作无法撤销。',
       okText: kind === 'history' ? '清空记录' : '确认删除', cancelText: '取消',
@@ -343,7 +345,7 @@ export default function App() {
             setConversations(previous => previous.filter(conversation => conversation.id !== selected.id));
             sessionStorage.removeItem(CONVERSATION_STORAGE); setHistory([]); setDraft('');
             setActiveId(remaining[0]?.id || '');
-            message.success('测试会话已删除');
+            message.success(CONVERSATION_LABEL + '已删除');
           } else if (kind === 'history') {
             await api.clearHistory(selected.id); setHistory([]); setHistoryError('');
             message.success('聊天记录已清空，下一条消息将重新开始上下文');
@@ -371,8 +373,8 @@ export default function App() {
       setCapabilities(caps); setProviders(sites); setConversations(chats);
       setVoices(voiceProfiles);
       const saved = sessionStorage.getItem(CONVERSATION_STORAGE);
-      setActiveId(chats.find(c => c.channel === 'debug' && c.id === saved)?.id
-        || chats.find(c => c.channel === 'debug')?.id || '');
+      setActiveId(chats.find(c => c.channel === chatChannel && c.id === saved)?.id
+        || chats.find(c => c.channel === chatChannel)?.id || '');
       setConnected(true);
     } catch (error) {
       if (generation === connectionRequest.current) { setConnectionError(errorText(error)); setConnected(false); }
@@ -392,6 +394,7 @@ export default function App() {
   }, [connected, page]);
 
   useEffect(() => () => streamController.current?.abort(), []);
+  useEffect(() => { reportDesktopState({ thinking: sending }); }, [sending]);
   useEffect(() => {
     stopSpeechPlayback();
     setAutoReadMessage('');
@@ -501,7 +504,7 @@ export default function App() {
   }
 
   const pageTitles: Record<Page, [string, string]> = {
-    chat: ['聊天测试', '调好角色和音色，让每一句回应更亲近。'],
+    chat: [isDesktop ? '和菜菜聊天' : '聊天测试', '调好角色和音色，让每一句回应更亲近。'],
     providers: ['中转站管理', '一个工作台，连接不同的模型服务。'],
     voices: ['音色与语音', '熟悉的声音，在你的电脑上生成。'],
     channels: ['微信接入', '微信能力后续接入，先在本地体验菜菜。'],
@@ -526,10 +529,10 @@ export default function App() {
       <p>保持终端运行，再点击「连接后端」。</p></> }]} />
   </div></div></div>;
 
-  return <div className="workspace"><aside className="sidebar"><Brand />
+  return <div className={'workspace' + (isDesktop ? ' desktop-workspace' : '')}><aside className="sidebar"><Brand />
     <div className="sidebar-label">工作空间</div><nav aria-label="主导航">
       {([
-        ['chat', <CommentOutlined />, '聊天测试'], ['providers', <CloudServerOutlined />, '中转站管理'],
+        ['chat', <CommentOutlined />, isDesktop ? '和菜菜聊天' : '聊天测试'], ['providers', <CloudServerOutlined />, '中转站管理'],
         ['voices', <AudioOutlined />, '音色与语音'], ['channels', <WechatOutlined />, '微信接入'], ['connection', <SettingOutlined />, '连接设置'],
       ] as const).map(([key, icon, label]) => <button key={key} className={'nav-item ' + (page === key ? 'selected' : '')}
         aria-label={label} title={label} onClick={() => setPage(key)}>{icon}<span>{label}</span>{page === key && <i />}</button>)}
@@ -537,7 +540,11 @@ export default function App() {
       <strong>让回应有熟悉的声音</strong><p>上传参考录音，在本机生成菜菜的专属声音。</p><button onClick={() => setPage('voices')}>去音色与语音 <ArrowRightOutlined /></button></div>
     <div className="sidebar-footer"><Badge status="success" text="本地后端已连接" /><span>开发工作台 · v0.1</span></div>
   </aside><main className="main-content"><header className="topbar"><div><div className="breadcrumb">工作空间 <span>/</span> {pageTitles[page][0]}</div>
-    <h1>{pageTitles[page][0]}</h1><p>{pageTitles[page][1]}</p></div><div className="topbar-right"><span className="local-badge"><span /> 本地开发</span>
+    <h1>{pageTitles[page][0]}</h1><p>{pageTitles[page][1]}</p></div><div className="topbar-right"><span className="local-badge"><span /> {isDesktop ? '桌面常驻' : '本地开发'}</span>
+      {isDesktop && <Button icon={<SettingOutlined />} onClick={() => {
+        void fetch('/caicai/control', { method: 'POST', headers: desktopHeaders() })
+          .catch(() => message.error('无法打开桌宠设置，请重新启动桌面端。'));
+      }}>桌宠设置</Button>}
       <Avatar style={{ background: '#e4eadf', color: '#45614d' }}>我</Avatar></div></header>
 
     {page === 'providers' && <ProvidersPage api={api} providers={providers} disabled={busy}
@@ -546,9 +553,9 @@ export default function App() {
       onRemoved={providerRemoved} />}
 
     {page === 'chat' && <div className="chat-page"><div className="chat-toolbar"><div className="conversation-select">
-      <Select aria-label="选择测试会话" value={activeId || undefined} placeholder="创建你的第一个会话" disabled={busy}
+      <Select aria-label={isDesktop ? '选择桌面会话' : '选择测试会话'} value={activeId || undefined} placeholder="创建你的第一个会话" disabled={busy}
         onChange={setActiveId} options={debugConversations.map(c => ({ value: c.id, label: c.peer_id }))} />
-      <Button icon={<PlusOutlined />} disabled={busy} onClick={() => { setNewChatName('测试会话 ' + (debugConversations.length + 1)); setNewChatOpen(true); }}>新建会话</Button>
+      <Button icon={<PlusOutlined />} disabled={busy} onClick={() => { setNewChatName(CONVERSATION_LABEL + ' ' + (debugConversations.length + 1)); setNewChatOpen(true); }}>新建会话</Button>
     </div><div className="chat-reading-options"><label><Switch size="small" checked={autoRead} aria-label="自动朗读新回复"
       onChange={checked => { if (checked) void prepareSpeechPlayback().catch(() => {});
         setAutoRead(checked); localStorage.setItem('caicai.auto-read', String(checked)); }} /> 自动朗读</label>
@@ -563,7 +570,7 @@ export default function App() {
           onClick={() => active && loadHistory(active.id)} /></Tooltip>
         <Dropdown trigger={['click']} menu={{ items: [
           { key: 'history', label: '清空聊天记录', icon: <DeleteOutlined />, danger: true },
-          { key: 'conversation', label: '删除测试会话', icon: <DeleteOutlined />, danger: true },
+          { key: 'conversation', label: '删除' + CONVERSATION_LABEL, icon: <DeleteOutlined />, danger: true },
         ], onClick: ({ key }) => confirmDelete(key as 'history' | 'conversation') }} disabled={!active || busy || historyLoading}>
           <Button type="text" aria-label="会话更多操作" icon={<EllipsisOutlined />} disabled={!active || busy || historyLoading} />
         </Dropdown></div></div>
@@ -572,7 +579,7 @@ export default function App() {
         {historyLoading && !sending ? <Skeleton active paragraph={{ rows: 4 }} /> : <>
           {!history.length && !sending && <div className="chat-empty"><div className="bot-illustration"><img src="/favicon.svg" alt="菜菜" /><span className="spark spark-one">✦</span><span className="spark spark-two">✧</span></div>
             <span className="eyebrow">MEET YOUR LITTLE COMPANION</span><h2>你好呀，我是菜菜。</h2>
-            <p>{active ? '选好模型和角色，就从你想说的第一句话开始吧。' : '先创建一个测试会话，就可以在这里和我聊天。'}</p>
+            <p>{active ? '选好模型和角色，就从你想说的第一句话开始吧。' : '先创建一个' + CONVERSATION_LABEL + '，就可以在这里和我聊天。'}</p>
             {active ? <div className="suggestions">{['介绍一下你自己', '帮我规划今天的学习', '给我讲个轻松的小故事'].map(text =>
               <button key={text} onClick={() => setDraft(text)}>{text}<ArrowRightOutlined /></button>)}</div>
               : <Button type="primary" icon={<PlusOutlined />} onClick={() => { setNewChatName('我的第一个会话'); setNewChatOpen(true); }}>创建第一个会话</Button>}
@@ -595,7 +602,7 @@ export default function App() {
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
         <div className="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><Button type="primary" icon={<SendOutlined />} loading={sending}
           disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div>
-      <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} 当前为网页测试，消息不会发送到微信。</div>
+      <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} {isDesktop ? '当前为桌面聊天，消息不会发送到微信。' : '当前为网页测试，消息不会发送到微信。'}</div>
     </section><aside className="chat-settings">{active && capabilities ? <ModelSettings key={active.id} api={api} conversation={active}
       providers={providers} voices={voices} capabilities={capabilities} disabled={busy} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
       : <Card title={<><SlidersOutlined /> 聊天设置</>}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="创建会话后配置模型" /></Card>}
@@ -615,7 +622,7 @@ export default function App() {
 
     {page === 'connection' && <div className="page-body connection-page"><Card title={<><LinkOutlined /> 后端连接</>}>
       <div className="connection-status"><Badge status="success" text="已连接当前后端" /><code>127.0.0.1:8000</code></div>
-      <p className="muted">请求由前端开发代理转发到本地后端。此页面用于本地开发测试。</p>
+      <p className="muted">{isDesktop ? '请求由桌面进程转发到本机后端。关闭聊天窗口会收起，连接和播报继续；退出程序后需要重新连接。' : '请求由前端开发代理转发到本地后端。此页面用于本地开发测试。'}</p>
       <ConnectionForm initialToken={token} connecting={connecting || busy} onConnect={connect} />
       <Button danger icon={<DisconnectOutlined />} disabled={busy || connecting} onClick={disconnect}>断开并清除令牌</Button>
     </Card><Card title="工作台能力"><div className="capability-row"><span>模型对话</span><Tag color="green">OpenAI 兼容</Tag></div>
@@ -624,7 +631,7 @@ export default function App() {
       <div className="capability-row"><span>微信 / 语音识别</span><Tag>待接入</Tag></div>
       <p className="muted">令牌和 API Key 不会写入前端源码。后端环境文件不要提交到 Git。</p></Card></div>}
     <footer className="workspace-footer"><span>CAICAI BOT</span><span>一点智能，一点陪伴。</span></footer>
-  </main><Modal title="新建测试会话" open={newChatOpen} confirmLoading={creating} okText="创建会话"
+  </main><Modal title={'新建' + CONVERSATION_LABEL} open={newChatOpen} confirmLoading={creating} okText="创建会话"
     cancelText="取消" okButtonProps={{ disabled: !newChatName.trim() }} onOk={createConversation}
     onCancel={() => !creating && setNewChatOpen(false)} closable={!creating} maskClosable={!creating}>
     <p className="muted">每个会话有独立的模型设置和聊天记录，不会发送到微信。</p>

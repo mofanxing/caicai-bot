@@ -8,7 +8,7 @@
 <div class="card"><h2>桌宠形象</h2><select id="pets" aria-label="桌宠形象"></select><button id="select">切换形象</button>
 <p>切换会保存选择；关闭这个面板后桌宠仍然常驻。右键桌宠可使用原有动作与显示菜单，从托盘退出程序。</p><small>只有一个形象时，可按 desktop/README.md 安装新的上游格式角色包。</small></div>
 <div class="card"><div class="row"><h2>菜菜工作台</h2><span id="backend" class="badge">检查后端连接…</span></div>
-<p>在现有工作台管理模型、音色和聊天。本阶段完成桌宠底座；桌面内的正式聊天与语音联动尚未接通。</p><button id="workbench">打开工作台</button><p><small id="address"></small></p></div>
+<p>打开独立聊天窗，连接后端并创建桌面会话，即可使用已有模型和音色。关闭聊天窗会收起，回复和播报继续。</p><div class="row"><button id="chat">和菜菜聊天</button><button id="workbench">打开网页工作台</button></div><p><small id="address"></small></p></div>
 <div id="message" role="status"></div><small>默认“大肥鱼”形象用于个人非商业验证。来源：PC2005-cloud/dsh-pet；形象遵循 CC BY-NC-SA 4.0，详见 THIRD_PARTY_NOTICES.md。</small>
 <script>
 const token=new URLSearchParams(location.hash.slice(1)).get('token')||'';
@@ -18,5 +18,6 @@ async function api(path,body){const response=await fetch(path,{method:body?'POST
 async function refresh(){const status=await api('/caicai/status');const select=document.getElementById('pets');select.replaceChildren();for(const pet of status.pets){const option=document.createElement('option');option.value=pet.id;option.textContent=pet.name+' · '+pet.entry;option.selected=pet.display==='desktop'||pet.display==='both';select.append(option);}document.getElementById('backend').textContent=status.backendReady?'后端已连接':'后端未启动';document.getElementById('address').textContent='工作台：'+status.workbench+'；后端：'+status.backend;document.getElementById('select').disabled=!status.pets.length;}
 document.getElementById('select').onclick=async function(){this.disabled=true;message.textContent='';try{await api('/caicai/select',{id:document.getElementById('pets').value});await refresh();message.textContent='形象已切换并保存';}catch(error){message.textContent=error.message;}finally{this.disabled=false;}};
 document.getElementById('workbench').onclick=()=>api('/caicai/workbench',{}).catch(error=>message.textContent=error.message);
+document.getElementById('chat').onclick=()=>api('/caicai/chat',{}).catch(error=>message.textContent=error.message);
 refresh().catch(error=>message.textContent=error.message);
 </script></body></html>

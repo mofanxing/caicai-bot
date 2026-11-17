@@ -163,7 +163,7 @@ def set_conversation(
         with request.app.state.speech_service.guard:
             if payload.voice_id and not db.get(Voice, payload.voice_id):
                 raise ServiceError("voice_not_found", "所选音色不存在，请重新选择", 404)
-            if conversation.channel != "debug" and payload.reply_mode != "text":
+            if conversation.channel == "wechat_personal" and payload.reply_mode != "text":
                 raise ServiceError("wechat_voice_not_supported", "微信语音投递尚未接入", 501)
             for key, value in payload.model_dump().items():
                 setattr(conversation, key, value)
@@ -183,17 +183,17 @@ def get_messages(conversation_id: str, db=Depends(get_db)):
     ).all()
 
 
-def find_debug_conversation(db, conversation_id: str):
+def find_local_conversation(db, conversation_id: str):
     conversation = find_conversation(db, conversation_id)
-    if conversation.channel != "debug":
-        raise ServiceError("wrong_channel", "该删除操作只适用于测试会话", 409)
+    if conversation.channel not in {"debug", "desktop"}:
+        raise ServiceError("wrong_channel", "该操作只适用于本地聊天会话", 409)
     return conversation
 
 
 @admin.delete("/conversations/{conversation_id}/messages")
 def clear_messages(conversation_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
-        find_debug_conversation(db, conversation_id)
+        find_local_conversation(db, conversation_id)
         request.app.state.speech_service.clear_message_audio(db, conversation_id)
         removed = db.execute(delete(Message).where(Message.conversation_id == conversation_id))
         db.commit()
@@ -203,7 +203,7 @@ def clear_messages(conversation_id: str, request: Request, db=Depends(get_db)):
 @admin.delete("/conversations/{conversation_id}/messages/{message_id}")
 def delete_message(conversation_id: str, message_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
-        find_debug_conversation(db, conversation_id)
+        find_local_conversation(db, conversation_id)
         message = db.get(Message, message_id)
         if not message or message.conversation_id != conversation_id:
             raise ServiceError("message_not_found", "该会话中不存在此条记录", 404)
@@ -216,7 +216,7 @@ def delete_message(conversation_id: str, message_id: str, request: Request, db=D
 @admin.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
-        conversation = find_debug_conversation(db, conversation_id)
+        conversation = find_local_conversation(db, conversation_id)
         request.app.state.speech_service.clear_message_audio(db, conversation_id)
         db.execute(delete(Message).where(Message.conversation_id == conversation_id))
         db.delete(conversation)
@@ -245,6 +245,30 @@ def debug_message_stream(
     conversation = find_conversation(db, conversation_id)
     if conversation.channel != "debug":
         raise ServiceError("wrong_channel", "调试接口只接受 debug 会话", 409)
+    return stream_message(conversation_id, payload, request)
+
+
+@admin.post("/desktop/conversations/{conversation_id}/messages", response_model=MessageRead)
+def desktop_message(
+    conversation_id: str, payload: IncomingMessage, request: Request, db=Depends(get_db)
+):
+    conversation = find_conversation(db, conversation_id)
+    if conversation.channel != "desktop":
+        raise ServiceError("wrong_channel", "桌面接口只接受 desktop 会话", 409)
+    return request.app.state.chat_service.handle(db, conversation, payload)
+
+
+@admin.post("/desktop/conversations/{conversation_id}/messages/stream")
+def desktop_message_stream(
+    conversation_id: str, payload: IncomingMessage, request: Request, db=Depends(get_db)
+):
+    conversation = find_conversation(db, conversation_id)
+    if conversation.channel != "desktop":
+        raise ServiceError("wrong_channel", "桌面接口只接受 desktop 会话", 409)
+    return stream_message(conversation_id, payload, request)
+
+
+def stream_message(conversation_id: str, payload: IncomingMessage, request: Request):
     events = Queue()
 
     def generate():

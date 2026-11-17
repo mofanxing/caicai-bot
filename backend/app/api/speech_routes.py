@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 
-from app.api.routes import find_debug_conversation, get_db, require_admin
+from app.api.routes import find_local_conversation, get_db, require_admin
 from app.core.errors import ServiceError
 from app.models import Message, SpeechJob, Voice
 from app.schemas import SpeechJobRead, SpeechPreview, VoiceRead
@@ -157,7 +157,7 @@ def retry_message_speech(
 ):
     chat, speech = request.app.state.chat_service, request.app.state.speech_service
     with chat.conversation_guard(conversation_id), speech.guard:
-        conversation = find_debug_conversation(db, conversation_id)
+        conversation = find_local_conversation(db, conversation_id)
         message = db.get(Message, message_id)
         if not message or message.conversation_id != conversation.id:
             raise ServiceError("message_not_found", "该会话中不存在此条记录", 404)

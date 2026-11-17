@@ -4,7 +4,7 @@
 
 后台本地音色复刻、试听与聊天音频已实现，接下来推进桌面宠物、任务调度中心与语音输入，微信接入后置。阶段清单与跟进记录见 [桌宠与任务调度中心规划](docs/ROADMAP.md)，实施记录见 [音色复刻方案](docs/VOICE_PLAN.md)，安装操作见 [本地语音使用说明](docs/LOCAL_TTS.md)。
 
-2026-11-17 已确认：桌宠基于 dsh-pet 修改，菜菜采用插件式 Agent 调度架构，通过执行器适配器接入 Codex、DeepSeek Harness 等能力。职责划分、最小插件契约、任务生命周期及实施验收见 [插件式 Agent 调度架构](docs/AGENT_PLUGIN_ARCHITECTURE.md)。已开始 M1：新增固定版本的 Mac 桌宠底座与控制面板，保留上游动画及角色加载机制；正式桌面聊天、插件系统和执行器接入仍未实现。启动、角色包接入与验证说明见 [桌面端说明](desktop/README.md)。
+2026-11-17 已确认：桌宠基于 dsh-pet 修改，菜菜采用插件式 Agent 调度架构，通过执行器适配器接入 Codex、DeepSeek Harness 等能力。职责划分、最小插件契约、任务生命周期及实施验收见 [插件式 Agent 调度架构](docs/AGENT_PLUGIN_ARCHITECTURE.md)。M1 已有固定版本的 Mac 桌宠底座、控制面板和正式桌面聊天：复用现有模型配置、流式文字、本地音色和分段播放，按实际生成 / 缓冲 / 出声状态联动气泡与原生动画；关闭聊天窗会收起并保留连接。完整人工交互及双角色验收、后端自动启动与打包仍待完成，插件系统和执行器尚未接入。启动、角色包接入与验证说明见 [桌面端说明](desktop/README.md)。
 
 桌宠改造必须保留 dsh-pet 的动画交互与角色切换能力，并沿用低成本、可快速新增角色的素材制作与接入流程；这是首版要求。具体角色包兼容边界将在固定上游版本后验证。
 
@@ -24,7 +24,7 @@
 
 AI 助手后端。目前完成模型配置、本地文字聊天及本地音色复刻链路，微信接入后置。
 
-已实现：站点创建、查询与删除、页面配置及替换加密密钥、测试聊天记录和会话删除、OpenAI 兼容模型列表及文字对话、会话模型设置、最近 10 轮上下文、消息持久化与去重、管理员鉴权、本地模拟聊天。
+已实现：站点创建、查询与删除、页面配置及替换加密密钥、本地聊天记录和会话删除、OpenAI 兼容模型列表及文字对话、会话模型设置、最近 10 轮上下文、消息持久化与去重、管理员鉴权、本地模拟聊天，以及不依赖 debug 接口的正式 desktop 聊天通道。
 
 本轮新增：参考录音上传与管理、VoxCPM2 本地音色复刻、表达提示词试听、聊天音频异步生成与失败重试。
 
@@ -107,7 +107,7 @@ Python 命令按机器的安装情况替换，版本须满足要求。当前仅�
 
 保护范围：提交时浏览器和对应中转站必然会接触明文，持有后端主密钥的人可以解密数据库，不能承诺绝对不会泄露。请保护电脑、浏览器和 ADMIN_TOKEN，不安装不可信浏览器扩展，不将数据目录或环境文件公开。删除为应用数据删除，不能清除已有备份或上游副本。
 
-删除接口：DELETE /api/v1/providers/{id}、DELETE /api/v1/conversations/{id}/messages/{message_id}、DELETE /api/v1/conversations/{id}/messages、DELETE /api/v1/conversations/{id}。聊天删除仅支持 debug 会话。替换密钥使用 PUT /api/v1/providers/{id}/key，请求体为 {"api_key":"新的密钥"}。
+删除接口：DELETE /api/v1/providers/{id}、DELETE /api/v1/conversations/{id}/messages/{message_id}、DELETE /api/v1/conversations/{id}/messages、DELETE /api/v1/conversations/{id}。聊天删除支持 debug / desktop 本地会话，不开放微信会话删除。替换密钥使用 PUT /api/v1/providers/{id}/key，请求体为 {"api_key":"新的密钥"}。
 
 当前为单进程保护；同一会话或同一中转站正在请求时，冲突的操作返回 409，稍后重试。
 

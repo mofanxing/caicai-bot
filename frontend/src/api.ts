@@ -1,5 +1,6 @@
 import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate,
   VoiceProfile, SpeechStatus, SpeechJob, ChatStreamEvent } from './types';
+import { chatChannel, desktopHeaders } from './desktop';
 
 export async function streamChat(token: string, id: string, text: string, externalId: string,
   onEvent: (event: ChatStreamEvent) => void, signal?: AbortSignal): Promise<ChatMessage> {
@@ -12,9 +13,9 @@ export async function streamChat(token: string, id: string, text: string, extern
   armTimeout();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const response = await fetch('/api/v1/debug/conversations/' + encodeURIComponent(id) + '/messages/stream', {
+    const response = await fetch('/api/v1/' + chatChannel + '/conversations/' + encodeURIComponent(id) + '/messages/stream', {
       method: 'POST', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      headers: { ...desktopHeaders(), 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({ text, external_id: externalId }),
     });
     if (!response.ok) {
@@ -70,6 +71,7 @@ export async function request<T>(token: string, path: string, init: RequestInit 
     const response = await fetch('/api/v1' + path, {
       ...init,
       headers: {
+        ...desktopHeaders(),
         ...(init.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         ...init.headers,
         Authorization: 'Bearer ' + token,
@@ -132,7 +134,7 @@ export const createApi = (token: string) => ({
   models: (id: string) => request<{ models: string[] }>(token, '/providers/' + id + '/models'),
   conversations: () => request<Conversation[]>(token, '/conversations'),
   addConversation: (name: string) => request<Conversation>(token, '/conversations', {
-    method: 'POST', body: JSON.stringify({ channel: 'debug', account_id: 'web', peer_id: name }),
+    method: 'POST', body: JSON.stringify({ channel: chatChannel, account_id: chatChannel === 'desktop' ? 'desktop' : 'web', peer_id: name }),
   }),
   settings: (id: string, payload: ConversationSettings) => request<Conversation>(token,
     '/conversations/' + id + '/settings', { method: 'PUT', body: JSON.stringify(payload) }),
@@ -144,7 +146,7 @@ export const createApi = (token: string) => ({
   deleteConversation: (id: string) => request<{ deleted: boolean }>(token,
     '/conversations/' + id, { method: 'DELETE' }),
   send: (id: string, text: string, externalId: string) => request<ChatMessage>(token,
-    '/debug/conversations/' + id + '/messages', {
+    '/' + chatChannel + '/conversations/' + id + '/messages', {
       method: 'POST', body: JSON.stringify({ text, external_id: externalId }),
     }),
 });

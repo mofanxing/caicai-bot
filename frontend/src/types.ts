@@ -15,7 +15,7 @@ export interface ProviderCreate {
 
 export interface Conversation {
   id: string;
-  channel: 'debug' | 'wechat_personal';
+  channel: 'debug' | 'desktop' | 'wechat_personal';
   account_id: string;
   peer_id: string;
   provider_id: string | null;

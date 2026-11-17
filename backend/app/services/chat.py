@@ -70,7 +70,7 @@ class ChatService:
         )
         if previous:
             return previous
-        if conversation.reply_mode != "text" and conversation.channel != "debug":
+        if conversation.reply_mode != "text" and conversation.channel == "wechat_personal":
             raise ServiceError(
                 "wechat_voice_not_supported", "微信语音投递尚未接入，请使用文字模式", 501
             )

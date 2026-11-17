@@ -18,9 +18,9 @@ from app.main import create_app
 from app.models import Conversation, Message, Provider, SpeechJob
 
 
-def stream_send(client, cid, text="你好。下一句。", external_id="stream-one"):
+def stream_send(client, cid, text="你好。下一句。", external_id="stream-one", channel="debug"):
     response = client.post(
-        f"/api/v1/debug/conversations/{cid}/messages/stream",
+        f"/api/v1/{channel}/conversations/{cid}/messages/stream",
         headers=HEADERS,
         json={"text": text, "external_id": external_id},
     )
@@ -30,11 +30,14 @@ def stream_send(client, cid, text="你好。下一句。", external_id="stream-o
     ]
 
 
-def test_stream_synthesizes_first_sentence_before_llm_finishes(client, engine, monkeypatch):
+@pytest.mark.parametrize("channel", ["debug", "desktop"])
+def test_stream_synthesizes_first_sentence_before_llm_finishes(
+    client, engine, monkeypatch, channel
+):
     local, calls, synthesize = engine
     started = threading.Event()
     voice = add_voice(client)
-    cid = conversation(client, voice["id"], "both")
+    cid = conversation(client, voice["id"], "both", channel=channel)
     with client.app.state.session_factory() as db:
         provider = Provider(name="stream", base_url="https://example.test", api_key_env="TEST")
         db.add(provider)
@@ -54,7 +57,7 @@ def test_stream_synthesizes_first_sentence_before_llm_finishes(client, engine, m
 
     monkeypatch.setattr(local, "synthesize", tracked)
     monkeypatch.setattr(client.app.state.chat_service.llm, "stream", generate)
-    events = stream_send(client, cid)
+    events = stream_send(client, cid, channel=channel)
     assert events[0]["type"] == "start" and events[0]["message_id"]
     assert events[-1]["type"] == "done", events
     ids = [event["job_id"] for event in events if event["type"] == "speech"]
@@ -63,11 +66,10 @@ def test_stream_synthesizes_first_sentence_before_llm_finishes(client, engine, m
     result = events[-1]["message"]
     assert result["speech_job_ids"] == ids
     assert result["assistant_text"] == (
-        "你好呀。我们先把第一件事情慢慢讲清楚，再一起讨论你刚才提到的问题。"
-        "这是稍后才生成的第二句。"
+        "你好呀。我们先把第一件事情慢慢讲清楚，再一起讨论你刚才提到的问题。这是稍后才生成的第二句。"
     )
     assert "".join(call[0] for call in calls) == result["assistant_text"]
-    repeated = stream_send(client, cid)
+    repeated = stream_send(client, cid, channel=channel)
     assert repeated == [{"type": "done", "message": result}]
     assert len(calls) == 2
     history = client.get(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).json()
@@ -214,8 +216,10 @@ def wait_job(client, job_id):
     pytest.fail("Speech job did not finish")
 
 
-def conversation(client, voice_id=None, mode="text", prompt=""):
-    response = client.post("/api/v1/conversations", headers=HEADERS, json={"peer_id": "speech"})
+def conversation(client, voice_id=None, mode="text", prompt="", channel="debug"):
+    response = client.post(
+        "/api/v1/conversations", headers=HEADERS, json={"peer_id": "speech", "channel": channel}
+    )
     cid = response.json()["id"]
     settings = client.put(
         f"/api/v1/conversations/{cid}/settings",

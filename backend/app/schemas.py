@@ -70,7 +70,7 @@ class ProviderRead(BaseModel):
 
 
 class ConversationCreate(BaseModel):
-    channel: Literal["debug", "wechat_personal"] = "debug"
+    channel: Literal["debug", "desktop", "wechat_personal"] = "debug"
     account_id: str = Field(default="local", min_length=1, max_length=200)
     peer_id: str = Field(min_length=1, max_length=200)
 

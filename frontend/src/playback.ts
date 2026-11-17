@@ -1,4 +1,5 @@
 // Keep one output context alive across asynchronous generation and sentence changes.
+import { reportAudioPlayback as playing } from './desktop';
 let output: AudioContext | undefined;
 
 function context(): AudioContext {
@@ -51,9 +52,9 @@ export class SpeechPlayback {
     this.source = source; this.started = audio.currentTime;
     source.onended = () => {
       if (this.source !== source) return;
-      this.source = undefined; this.offset = 0; source.disconnect(); this.onEnded();
+      this.source = undefined; this.offset = 0; source.disconnect(); playing(source, false); this.onEnded();
     };
-    try { source.start(0, this.offset); }
+    try { source.start(0, this.offset); playing(source, true); }
     catch (error) { this.source = undefined; source.disconnect(); throw error; }
   }
 
@@ -64,6 +65,7 @@ export class SpeechPlayback {
     if (!source) return;
     this.offset = Math.min(this.buffer?.duration || 0, this.offset + context().currentTime - this.started);
     this.source = undefined; source.onended = null; source.stop(); source.disconnect();
+    playing(source, false);
   }
 
   dispose(): void { this.pause(); this.loadGeneration++; this.disposed = true; this.buffer = undefined; }
