@@ -1,17 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Alert, App as AntApp, Button, Card, Empty, Form, Input, Modal, Select, Spin, Tag } from 'antd';
 import { AudioOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, SoundOutlined } from '@ant-design/icons';
 import type { Api } from './api';
 import type { SpeechJob, SpeechStatus, VoiceProfile } from './types';
 import { prepareReference } from './audio';
+import { decodeSpeechAudio, prepareSpeechPlayback, SpeechPlayback } from './playback';
+export { prepareSpeechPlayback } from './playback';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
+const PLAY_EVENT = 'caicai-audio-start';
+
+function announcePlayback(id: string) {
+  window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: id }));
+}
+
+export function stopSpeechPlayback() { announcePlayback(''); }
 
 export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | 'job'; id: string }) {
   const [url, setUrl] = useState('');
   const [error, setError] = useState('');
   const [generation, setGeneration] = useState(0);
   const audio = useRef<HTMLAudioElement>(null);
+  const playerId = useId();
+  useEffect(() => {
+    const stop = (event: Event) => {
+      if ((event as CustomEvent).detail !== playerId) audio.current?.pause();
+    };
+    window.addEventListener(PLAY_EVENT, stop);
+    return () => window.removeEventListener(PLAY_EVENT, stop);
+  }, [playerId]);
   useEffect(() => {
     const element = audio.current;
     return () => { element?.pause(); element?.removeAttribute('src'); element?.load(); };
@@ -31,12 +48,12 @@ export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | '
   }, [api, id, kind, generation]);
   if (error) return <div className="speech-error"><span>{error}</span>
     <Button size="small" onClick={() => setGeneration(value => value + 1)}>重新加载音频</Button></div>;
-  return url ? <audio ref={audio} controls preload="metadata" src={url} aria-label={kind === 'reference' ? '参考录音' : '合成语音'} />
+  return url ? <audio ref={audio} controls preload="metadata" src={url} onPlay={() => announcePlayback(playerId)} aria-label={kind === 'reference' ? '参考录音' : '合成语音'} />
     : <span className="muted"><Spin size="small" /> 正在读取本地音频…</span>;
 }
 
-export function SpeechJobPlayer({ api, jobId, onFinished, onRetry }: {
-  api: Api; jobId: string; onFinished?: (job: SpeechJob) => void; onRetry?: () => void;
+export function SpeechJobPlayer({ api, jobId, onFinished, onRetry, autoPlay = false }: {
+  api: Api; jobId: string; onFinished?: (job: SpeechJob) => void; onRetry?: () => void; autoPlay?: boolean;
 }) {
   const [job, setJob] = useState<SpeechJob | null>(null);
   const [error, setError] = useState('');
@@ -50,7 +67,7 @@ export function SpeechJobPlayer({ api, jobId, onFinished, onRetry }: {
         const next = await api.speechJob(jobId);
         if (disposed) return;
         setJob(next);
-        if (next.status === 'queued' || next.status === 'running') timeout = setTimeout(poll, 1500);
+        if (next.status === 'queued' || next.status === 'running') timeout = setTimeout(poll, 500);
         else callback.current?.(next);
       } catch (reason) { if (!disposed) setError(errorText(reason)); }
     }
@@ -63,26 +80,168 @@ export function SpeechJobPlayer({ api, jobId, onFinished, onRetry }: {
         <span>{job?.status === 'running' ? '正在本机合成语音，首次加载与编译可能需要几分钟…' : '语音已排队，文字聊天可以继续。'}</span></div>
       : job.status === 'failed' ? <Alert type="warning" message="语音未生成，文字内容已保留" description={job.error}
         action={onRetry && <Button size="small" onClick={onRetry}>重试语音</Button>} />
+      : autoPlay ? <SpeechPlaylist api={api} jobIds={[job.id]} autoPlay />
       : <><SpeechAudio api={api} kind="job" id={job.id} /><small className="muted">
         本地生成 · {job.duration_seconds?.toFixed(1)} 秒音频 · 合成耗时 {job.generation_seconds?.toFixed(1)} 秒</small></>}
   </div>;
 }
 
-export function MessageSpeech({ api, conversationId, messageId, initialJobId, canGenerate }: {
+export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = false, playbackMode = 'smooth' }: {
+  api: Api; jobIds: string[]; autoPlay?: boolean; streaming?: boolean; playbackMode?: 'smooth' | 'realtime';
+}) {
+  const [jobs, setJobs] = useState<Record<string, SpeechJob>>({});
+  const jobsRef = useRef(jobs); jobsRef.current = jobs;
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(autoPlay);
+  const [readyId, setReadyId] = useState('');
+  const [buffering, setBuffering] = useState(true);
+  const [preparedVersion, setPreparedVersion] = useState(0);
+  const prepared = useRef(new Map<string, AudioBuffer>());
+  const preparing = useRef(new Set<string>());
+  const epoch = useRef(0);
+  const windowIds = jobIds.slice(index, index + 3);
+  const windowRef = useRef(windowIds); windowRef.current = windowIds;
+  const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
+  const playback = useRef<SpeechPlayback | null>(null);
+  const loadedBuffer = useRef<{ id: string; buffer: AudioBuffer } | null>(null);
+  const playerId = useId();
+  const idsKey = jobIds.join(',');
+  const currentId = jobIds[index];
+  const job = jobs[currentId];
+  const complete = !streaming && index >= jobIds.length;
+  const completedJobs = jobIds.map(id => jobs[id]).filter(item => item?.status === 'completed');
+  const totalDuration = completedJobs.reduce((sum, item) => sum + (item.duration_seconds || 0), 0);
+  const totalGeneration = completedJobs.reduce((sum, item) => sum + (item.generation_seconds || 0), 0);
+  const slowerThanPlayback = totalDuration > 0 && totalGeneration / totalDuration > 1.1;
+  const allSettled = !streaming && jobIds.every(id => ['completed', 'failed'].includes(jobs[id]?.status));
+  let readyDuration = 0; let readyCount = 0;
+  for (const id of windowIds) {
+    const buffer = prepared.current.get(id);
+    if (!buffer) break;
+    readyDuration += buffer.duration; readyCount++;
+  }
+  const enoughBuffer = playbackMode === 'realtime' || allSettled
+    || (!slowerThanPlayback && readyCount >= 2 && readyDuration >= 8);
+  useEffect(() => { setPlaying(autoPlay); }, [autoPlay]);
+  useEffect(() => {
+    const player = new SpeechPlayback(() => setIndex(value => value + 1));
+    epoch.current++;
+    playback.current = player;
+    return () => { epoch.current++; prepared.current.clear(); preparing.current.clear();
+      player.dispose(); if (playback.current === player) playback.current = null; };
+  }, []);
+  useEffect(() => {
+    const stop = (event: Event) => {
+      if ((event as CustomEvent).detail !== playerId) setPlaying(false);
+    };
+    window.addEventListener(PLAY_EVENT, stop);
+    return () => window.removeEventListener(PLAY_EVENT, stop);
+  }, [playerId]);
+  useEffect(() => {
+    let disposed = false; let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const ids = idsKey.split(',').filter(Boolean);
+        const pending = ids.filter(id => !jobsRef.current[id]
+          || ['queued', 'running'].includes(jobsRef.current[id].status));
+        const next = await Promise.all(pending.map(id => api.speechJob(id)));
+        if (disposed) return;
+        setJobs(previous => Object.fromEntries([...Object.entries(previous), ...next.map(item => [item.id, item])]));
+        setError('');
+        if (next.some(item => ['queued', 'running'].includes(item.status))) timer = setTimeout(poll, 500);
+      } catch (reason) { if (!disposed) { setError(errorText(reason)); } }
+    }
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [api, idsKey, reload]);
+  const prefetchKey = windowIds.map(id => id + ':' + jobs[id]?.status).join(',');
+  useEffect(() => {
+    const generation = epoch.current;
+    for (const id of prepared.current.keys()) if (!windowRef.current.includes(id)) prepared.current.delete(id);
+    for (const id of windowRef.current) {
+      if (jobsRef.current[id]?.status !== 'completed' || prepared.current.has(id) || preparing.current.has(id)) continue;
+      preparing.current.add(id);
+      void api.speechAudio(id).then(decodeSpeechAudio).then(buffer => {
+        if (epoch.current !== generation || !windowRef.current.includes(id)) return;
+        prepared.current.set(id, buffer); setPreparedVersion(value => value + 1);
+      }).catch(reason => {
+        if (epoch.current === generation && windowRef.current[0] === id) setError(errorText(reason));
+      }).finally(() => { if (epoch.current === generation) preparing.current.delete(id); });
+    }
+  }, [api, prefetchKey, reload]);
+  useEffect(() => {
+    const player = playback.current; const buffer = prepared.current.get(currentId);
+    if (buffer && player) {
+      if (loadedBuffer.current?.id === currentId && loadedBuffer.current.buffer === buffer) return;
+      player.loadBuffer(buffer); loadedBuffer.current = { id: currentId, buffer }; setReadyId(currentId);
+    } else { loadedBuffer.current = null; player?.pause(); setReadyId(''); setBuffering(true); }
+  }, [currentId, preparedVersion]);
+  useEffect(() => { if (enoughBuffer && readyId === currentId && readyId) setBuffering(false); },
+    [enoughBuffer, readyId, currentId]);
+  useEffect(() => {
+    const player = playback.current;
+    let disposed = false;
+    if (readyId === currentId && readyId && playing && !buffering && player) {
+      announcePlayback(playerId);
+      void player.play().catch(() => {
+        if (!disposed) { setPlaying(false); setError('浏览器暂未允许自动播放，请点击「开始朗读」。'); }
+      });
+    } else player?.pause();
+    return () => { disposed = true; };
+  }, [readyId, currentId, playing, buffering, playerId]);
+  async function retry() {
+    prepared.current.delete(currentId);
+    playback.current?.pause(); loadedBuffer.current = null; setReadyId(''); setBuffering(true);
+    if (job) {
+      try {
+        const next = await api.retrySpeechJob(job.id);
+        setJobs(previous => ({ ...previous, [next.id]: next }));
+        jobsRef.current = { ...jobsRef.current, [next.id]: next };
+      } catch (reason) { setError(errorText(reason)); return; }
+    }
+    setError(''); setReload(value => value + 1);
+  }
+  return <div className="speech-player">
+    <div className="speech-progress"><Button size="small" icon={<SoundOutlined />} onClick={() => {
+      if (!playing || complete) void prepareSpeechPlayback().catch(() => {});
+      if (complete) { setIndex(0); setPlaying(true); } else setPlaying(value => !value);
+    }}>{complete ? '重新朗读' : playing ? '暂停朗读' : '开始朗读'}</Button>
+      <span>{complete ? '朗读完成' : job?.status === 'failed' ? '此段语音生成失败，文字已保留'
+        : playing && buffering && playbackMode === 'smooth' ? (slowerThanPlayback
+          ? '合成慢于播报，正在缓冲完整回复以减少断句…' : '正在预载后续语音，缓冲后连续朗读…')
+        : job?.status === 'completed' ? `第 ${index + 1} 段 · ${playing ? '正在朗读' : '已就绪'}`
+        : job?.status === 'running' ? '正在本机合成语音…' : '等待下一段语音…'}</span></div>
+    {(error || job?.status === 'failed') && <div className="speech-error"><span>{error || job?.error}</span>
+      <Button size="small" onClick={() => void retry()}>重试语音</Button>
+      {job?.status === 'failed' && <Button size="small" onClick={() => setIndex(value => value + 1)}>跳过此段</Button>}</div>}
+    {!!completedJobs.length && <small className="muted">本地生成 · 已完成 {completedJobs.length}/{jobIds.length} 段
+      {' · 音频 ' + completedJobs.reduce((total, item) => total + (item.duration_seconds || 0), 0).toFixed(1) + ' 秒'}
+      {' · 合成耗时 ' + completedJobs.reduce((total, item) => total + (item.generation_seconds || 0), 0).toFixed(1) + ' 秒'}</small>}
+  </div>;
+}
+
+export function MessageSpeech({ api, conversationId, messageId, initialJobId, jobIds, canGenerate, autoPlay, streaming, playbackMode }: {
   api: Api; conversationId: string; messageId: string; initialJobId: string | null; canGenerate: boolean;
+  jobIds?: string[]; autoPlay?: boolean; streaming?: boolean;
+  playbackMode?: 'smooth' | 'realtime';
 }) {
   const [jobId, setJobId] = useState(initialJobId);
   const [loading, setLoading] = useState(false);
+  const [manualRead, setManualRead] = useState(false);
   const { message } = AntApp.useApp();
   useEffect(() => { setJobId(initialJobId); }, [initialJobId]);
   async function generate() {
     if (loading) return;
+    void prepareSpeechPlayback().catch(() => {}); stopSpeechPlayback();
+    setManualRead(true);
     setLoading(true);
     try { setJobId((await api.messageSpeech(conversationId, messageId)).id); }
     catch (error) { message.error(errorText(error)); }
     finally { setLoading(false); }
   }
-  return jobId ? <SpeechJobPlayer api={api} jobId={jobId} onRetry={canGenerate ? generate : undefined} />
+  const ids = jobIds?.length ? jobIds : jobId ? [jobId] : [];
+  return ids.length ? <SpeechPlaylist api={api} jobIds={ids} autoPlay={autoPlay || manualRead} streaming={streaming} playbackMode={playbackMode} />
     : canGenerate ? <Button className="read-message" size="small" type="text" icon={<SoundOutlined />} loading={loading} onClick={generate}>用当前音色朗读</Button> : null;
 }
 
@@ -98,6 +257,7 @@ export function VoicesPage({ api, voices, onChanged }: {
   const [selected, setSelected] = useState('');
   const [previewing, setPreviewing] = useState(false);
   const [jobId, setJobId] = useState('');
+  const [previewAutoplay, setPreviewAutoplay] = useState(false);
   const [reference, setReference] = useState<VoiceProfile | null>(null);
   const [uploadForm] = Form.useForm(); const [previewForm] = Form.useForm();
   const requestGeneration = useRef(0);
@@ -148,12 +308,13 @@ export function VoicesPage({ api, voices, onChanged }: {
   }
   async function preview(values: { text: string; style_prompt: string }) {
     if (!selected || previewing) return;
+    void prepareSpeechPlayback().catch(() => {}); stopSpeechPlayback();
     const generation = ++requestGeneration.current;
     setPreviewing(true); setJobId('');
     try {
       const job = await api.previewVoice(selected, values.text.trim(), values.style_prompt);
       if (generation === requestGeneration.current) {
-        setJobId(job.id);
+        setJobId(job.id); setPreviewAutoplay(true);
         if (job.status === 'completed' || job.status === 'failed') setPreviewing(false);
       }
     } catch (error) { if (generation === requestGeneration.current) { message.error(errorText(error)); setPreviewing(false); } }
@@ -200,9 +361,11 @@ export function VoicesPage({ api, voices, onChanged }: {
         <Form.Item name="style_prompt" label="语音表达提示词"><Input.TextArea rows={3} maxLength={500} disabled={previewing} placeholder="例如：语气温柔自然，语速稍慢，像和熟悉的人轻声聊天" /></Form.Item>
         <div className="voice-presets">{['温柔自然，语速稍慢', '开心活泼，语气轻快', '平静清晰，自然叙述'].map(value => <Button key={value} size="small" disabled={previewing} onClick={() => previewForm.setFieldValue('style_prompt', value)}>{value}</Button>)}</div>
         <p className="muted compact">语气指令与台词分开填写。实际音色和语气效果取决于参考录音与模型。</p>
-        <Button type="primary" htmlType="submit" block icon={<SoundOutlined />} loading={previewing} disabled={!selected || !status?.available || !!statusError}>生成试听</Button>
+        <Button type="primary" htmlType="submit" block icon={<SoundOutlined />} loading={previewing}
+          onClick={() => void prepareSpeechPlayback().catch(() => {})}
+          disabled={!selected || !status?.available || !!statusError}>生成并自动试听</Button>
       </Form>
-      {jobId && <SpeechJobPlayer api={api} jobId={jobId} onFinished={() => setPreviewing(false)} />}
+      {jobId && <SpeechJobPlayer key={jobId} api={api} jobId={jobId} autoPlay={previewAutoplay} onFinished={() => setPreviewing(false)} />}
     </Card></div>
     <Modal title="添加本地音色" open={open} onCancel={() => !uploading && setOpen(false)} footer={null}
       destroyOnClose closable={!uploading} maskClosable={!uploading}>

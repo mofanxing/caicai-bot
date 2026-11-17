@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import runpy
 import struct
@@ -14,7 +15,127 @@ from sqlalchemy import select
 
 from app.core.errors import ServiceError
 from app.main import create_app
-from app.models import Message, SpeechJob
+from app.models import Conversation, Message, Provider, SpeechJob
+
+
+def stream_send(client, cid, text="你好。下一句。", external_id="stream-one"):
+    response = client.post(
+        f"/api/v1/debug/conversations/{cid}/messages/stream",
+        headers=HEADERS,
+        json={"text": text, "external_id": external_id},
+    )
+    assert response.status_code == 200, response.text
+    return [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
+    ]
+
+
+def test_stream_synthesizes_first_sentence_before_llm_finishes(client, engine, monkeypatch):
+    local, calls, synthesize = engine
+    started = threading.Event()
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    with client.app.state.session_factory() as db:
+        provider = Provider(name="stream", base_url="https://example.test", api_key_env="TEST")
+        db.add(provider)
+        db.flush()
+        current = db.get(Conversation, cid)
+        current.provider_id, current.model_id = provider.id, "demo"
+        db.commit()
+
+    def generate(*args):
+        yield "你好呀。我们先把第一件事情慢慢讲清楚，再一起讨论你刚才提到的问题。"
+        assert started.wait(3), "TTS must begin before requesting the next LLM chunk"
+        yield "这是稍后才生成的第二句。"
+
+    def tracked(*args):
+        started.set()
+        return synthesize(*args)
+
+    monkeypatch.setattr(local, "synthesize", tracked)
+    monkeypatch.setattr(client.app.state.chat_service.llm, "stream", generate)
+    events = stream_send(client, cid)
+    assert events[0]["type"] == "start" and events[0]["message_id"]
+    assert events[-1]["type"] == "done", events
+    ids = [event["job_id"] for event in events if event["type"] == "speech"]
+    assert len(ids) == 2
+    assert all(wait_job(client, job_id)["status"] == "completed" for job_id in ids)
+    result = events[-1]["message"]
+    assert result["speech_job_ids"] == ids
+    assert result["assistant_text"] == (
+        "你好呀。我们先把第一件事情慢慢讲清楚，再一起讨论你刚才提到的问题。"
+        "这是稍后才生成的第二句。"
+    )
+    assert "".join(call[0] for call in calls) == result["assistant_text"]
+    repeated = stream_send(client, cid)
+    assert repeated == [{"type": "done", "message": result}]
+    assert len(calls) == 2
+    history = client.get(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).json()
+    assert history[0]["speech_job_ids"] == ids
+    assert (
+        client.delete(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).status_code == 200
+    )
+    assert all(not client.app.state.speech_service.audio_path(job_id).exists() for job_id in ids)
+
+
+def test_stream_caps_speech_explicitly_and_keeps_full_text(client, engine):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    events = stream_send(client, cid, "好" * 700)
+    assert events[-1]["type"] == "done"
+    assert any(event["type"] == "notice" for event in events)
+    ids = events[-1]["message"]["speech_job_ids"]
+    jobs = [wait_job(client, job_id) for job_id in ids]
+    assert all(job["status"] == "completed" for job in jobs)
+    assert sum(len(job["text"]) for job in jobs) == 600
+    assert len(events[-1]["message"]["assistant_text"]) > 700
+
+
+def test_retry_segment_and_missing_audio_reuses_job(client, engine, monkeypatch):
+    local, calls, synthesize = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    monkeypatch.setattr(
+        local, "synthesize", lambda *args: (_ for _ in ()).throw(ServiceError("test", "失败", 503))
+    )
+    events = stream_send(client, cid)
+    job_id = events[-1]["message"]["speech_job_ids"][0]
+    assert wait_job(client, job_id)["status"] == "failed"
+    monkeypatch.setattr(local, "synthesize", synthesize)
+    url = f"/api/v1/speech/jobs/{job_id}/retry"
+    assert client.post(url).status_code == 401
+    assert client.post(url, headers=HEADERS).json()["id"] == job_id
+    assert wait_job(client, job_id)["status"] == "completed"
+    client.app.state.speech_service.audio_path(job_id).unlink()
+    assert client.post(url, headers=HEADERS).status_code == 202
+    assert wait_job(client, job_id)["status"] == "completed"
+
+
+def test_reference_encoding_cache_is_bounded_and_invalidates(tmp_path):
+    install = runpy.run_path(str(Path(__file__).resolve().parents[1] / "local_tts/worker.py"))[
+        "cache_reference_encoding"
+    ]
+    calls, evaluated = [], []
+
+    class Model:
+        def _encode_wav(self, path, padding_mode, trim_silence_vad):
+            calls.append(path)
+            return object()
+
+    model = Model()
+    install(model, evaluated.append, max_entries=2)
+    paths = [tmp_path / f"{i}.wav" for i in range(3)]
+    for path in paths:
+        path.write_bytes(b"reference")
+    first = model._encode_wav(str(paths[0]))
+    assert model._encode_wav(str(paths[0])) is first
+    paths[0].write_bytes(b"changed reference")
+    assert model._encode_wav(str(paths[0])) is not first
+    model._encode_wav(str(paths[1]))
+    model._encode_wav(str(paths[2]))
+    model._encode_wav(str(paths[0]))
+    assert len(calls) == len(evaluated) == 5
+
 
 segments = runpy.run_path(str(Path(__file__).resolve().parents[1] / "local_tts/worker.py"))[
     "segments"
@@ -243,7 +364,56 @@ def test_speech_failure_preserves_chat_and_retry_only_synthesizes(client, engine
     assert retried["id"] != job["id"]
     assert wait_job(client, retried["id"])["status"] == "completed"
     assert client.post(url, headers=HEADERS).json()["id"] == retried["id"]
-    assert len(client.get(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).json()) == 1
+    history = client.get(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).json()
+    assert len(history) == 1
+    assert history[0]["speech_job_ids"] == [retried["id"]]
+
+
+def test_stream_failure_preserves_partial_text(client, monkeypatch):
+    cid = conversation(client)
+    with client.app.state.session_factory() as db:
+        provider = Provider(name="stream", base_url="https://example.test", api_key_env="TEST")
+        db.add(provider)
+        db.flush()
+        current = db.get(Conversation, cid)
+        current.provider_id, current.model_id = provider.id, "demo"
+        db.commit()
+
+    def generate(*args):
+        yield "这是已收到的文字。"
+        raise ServiceError("llm_timeout", "模型超时", 504)
+
+    monkeypatch.setattr(client.app.state.chat_service.llm, "stream", generate)
+    events = stream_send(client, cid)
+    assert events[-1]["type"] == "error"
+    history = client.get(f"/api/v1/conversations/{cid}/messages", headers=HEADERS).json()
+    assert history[0]["assistant_text"] == "这是已收到的文字。"
+    assert history[0]["status"] == "failed"
+    assert history[0]["speech_job_ids"] == []
+
+
+def test_voice_deleted_before_first_stream_sentence_keeps_text(client, monkeypatch):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    # Delete while the stream waits for upstream text, before enqueue can retain the voice.
+    with client.app.state.session_factory() as db:
+        provider = Provider(name="stream", base_url="https://example.test", api_key_env="TEST")
+        db.add(provider)
+        db.flush()
+        current = db.get(Conversation, cid)
+        current.provider_id, current.model_id = provider.id, "demo"
+        db.commit()
+
+    def generate(*args):
+        assert client.delete(f"/api/v1/voices/{voice['id']}", headers=HEADERS).status_code == 200
+        yield "这是仍然保留的文字。"
+
+    monkeypatch.setattr(client.app.state.chat_service.llm, "stream", generate)
+    events = stream_send(client, cid)
+    assert events[-1]["type"] == "done", events
+    assert events[-1]["message"]["assistant_text"] == "这是仍然保留的文字。"
+    assert events[-1]["message"]["speech_job_ids"] == []
+    assert any(event["type"] == "notice" for event in events)
 
 
 def test_manual_speech_checks_message_ownership(client, engine):

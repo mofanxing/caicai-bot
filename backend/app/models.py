@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -64,6 +64,18 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    speech_jobs: Mapped[list["SpeechJob"]] = relationship(
+        primaryjoin="Message.id == foreign(SpeechJob.message_id)",
+        order_by="(SpeechJob.created_at, SpeechJob.id)",
+        viewonly=True,
+    )
+
+    @property
+    def speech_job_ids(self) -> list[str]:
+        jobs = self.speech_jobs
+        # A legacy full-message retry supersedes earlier failed attempts.
+        start = next((i for i, job in enumerate(jobs) if job.id == self.speech_job_id), 0)
+        return [job.id for job in jobs[start:]]
 
 
 class Voice(Base):

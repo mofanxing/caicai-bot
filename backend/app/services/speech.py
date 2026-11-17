@@ -5,7 +5,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from app.core.errors import ServiceError
 from app.integrations.local_speech import LocalSpeechEngine
@@ -106,9 +106,9 @@ class SpeechService:
             raise
         return voice
 
-    def enqueue(self, db, voice, text, style_prompt=None, message=None):
+    def enqueue(self, db, voice, text, style_prompt=None, message=None, *, segment=False):
         with self.guard:
-            if message and message.speech_job_id:
+            if message and message.speech_job_id and not segment:
                 previous = db.get(SpeechJob, message.speech_job_id)
                 if (
                     previous
@@ -130,11 +130,21 @@ class SpeechService:
                     "单次语音最多支持 600 字，请使用较短回复或在音色页分段试听",
                 )
             elif (
-                len(db.scalars(select(SpeechJob.id).where(SpeechJob.status.in_(ACTIVE))).all()) >= 8
+                len(
+                    db.scalars(
+                        select(SpeechJob.id).where(
+                            SpeechJob.status.in_(ACTIVE),
+                            or_(SpeechJob.message_id.is_(None), SpeechJob.message_id != message.id)
+                            if segment and message
+                            else True,
+                        )
+                    ).all()
+                )
+                >= 8
             ):
                 job.status, job.error = "failed", "语音队列已满，请稍后手动重试"
             db.add(job)
-            if message:
+            if message and (not segment or not message.speech_job_id):
                 message.speech_job_id = job.id
             db.commit()
             if job.status == "queued":

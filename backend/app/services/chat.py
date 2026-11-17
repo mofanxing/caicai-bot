@@ -12,6 +12,7 @@ from app.integrations.llm import OpenAICompatibleClient
 from app.integrations.wechat import PersonalWechatBridge
 from app.models import Conversation, Message, Provider, Voice
 from app.schemas import IncomingMessage
+from app.services.speech_text import speech_boundary
 
 
 class ChatService:
@@ -49,15 +50,17 @@ class ChatService:
         finally:
             lock.release()
 
-    def handle(self, db: Session, conversation: Conversation, incoming: IncomingMessage) -> Message:
+    def handle(
+        self, db: Session, conversation: Conversation, incoming: IncomingMessage, on_event=None
+    ) -> Message:
         with self.conversation_guard(conversation.id):
             db.refresh(conversation)
             with self.provider_guard(conversation.provider_id):
                 db.refresh(conversation)
-                return self._handle(db, conversation, incoming)
+                return self._handle(db, conversation, incoming, on_event)
 
     def _handle(
-        self, db: Session, conversation: Conversation, incoming: IncomingMessage
+        self, db: Session, conversation: Conversation, incoming: IncomingMessage, on_event=None
     ) -> Message:
         previous = db.scalar(
             select(Message).where(
@@ -97,6 +100,8 @@ class ChatService:
                 )
             ).one()
         try:
+            if on_event:
+                on_event({"type": "start", "message_id": message.id})
             history = list(
                 reversed(
                     db.scalars(
@@ -119,7 +124,71 @@ class ChatService:
                     ]
                 )
             messages.append({"role": "user", "content": incoming.text})
-            if conversation.provider_id:
+            if on_event:
+                provider = (
+                    db.get(Provider, conversation.provider_id) if conversation.provider_id else None
+                )
+                chunks = (
+                    self.llm.stream(provider, conversation.model_id, messages)
+                    if provider
+                    else iter([f"模拟回复：{incoming.text}"])
+                )
+                message.assistant_text = ""
+                pending, spoken = "", 0
+                voice = (
+                    db.get(Voice, conversation.voice_id)
+                    if conversation.reply_mode != "text" and self.speech
+                    else None
+                )
+
+                def speak(text):
+                    nonlocal spoken, voice
+                    if not voice or not text.strip() or spoken >= 600:
+                        return
+                    text = text[: 600 - spoken]
+                    with self.speech.guard:
+                        if db.scalar(select(Voice.id).where(Voice.id == voice.id)) is None:
+                            voice = None
+                            db.commit()
+                            on_event(
+                                {
+                                    "type": "notice",
+                                    "message": "音色已被删除，后续语音已停止，文字回复继续。",
+                                }
+                            )
+                            return
+                        job = self.speech.enqueue(
+                            db,
+                            voice,
+                            text,
+                            conversation.voice_prompt or None,
+                            message,
+                            segment=True,
+                        )
+                    spoken += len(text)
+                    on_event({"type": "speech", "job_id": job.id})
+
+                # Do not hold an autoflushed SQLite write transaction while waiting for LLM.
+                db.commit()
+                for chunk in chunks:
+                    message.assistant_text += chunk
+                    on_event({"type": "delta", "text": chunk})
+                    if not voice:
+                        continue
+                    pending += chunk
+                    # Keep a short greeting with its next sentence for coherent prosody.
+                    while pending:
+                        cut = speech_boundary(pending, first=spoken == 0)
+                        if not cut:
+                            break
+                        speak(pending[:cut])
+                        pending = pending[cut:]
+                speak(pending)
+                if voice and len(message.assistant_text) > 600:
+                    on_event(
+                        {"type": "notice", "message": "回复超过 600 字，仅为前 600 字生成语音。"}
+                    )
+            elif conversation.provider_id:
                 provider = db.get(Provider, conversation.provider_id)
                 message.assistant_text = self.llm.complete(
                     provider, conversation.model_id, messages
@@ -139,7 +208,7 @@ class ChatService:
                 )
                 message.status = "sent"
                 db.commit()
-            if conversation.reply_mode != "text" and self.speech:
+            if not on_event and conversation.reply_mode != "text" and self.speech:
                 with self.speech.guard:
                     voice = db.get(Voice, conversation.voice_id)
                     if voice:
@@ -151,7 +220,7 @@ class ChatService:
                             message=message,
                         )
             return message
-        except ServiceError:
+        except Exception:
             message.status = "delivery_unknown" if message.status == "sending" else "failed"
             db.commit()
             raise

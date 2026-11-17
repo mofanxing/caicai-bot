@@ -8,6 +8,87 @@ from app.integrations.llm import OpenAICompatibleClient
 from app.models import Provider
 
 
+def sse(*events):
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content="".join(
+            "data: " + (event if isinstance(event, str) else json.dumps(event)) + "\n\n"
+            for event in events
+        ),
+    )
+
+
+def test_stream_chat_emits_text_and_checks_completion(upstream):
+    def handler(request):
+        assert json.loads(request.content)["stream"] is True
+        return sse(
+            {"choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "你好"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "呀。"}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            "[DONE]",
+        )
+
+    upstream(handler)
+    stream = OpenAICompatibleClient(45).stream(site(), "demo", [])
+    assert next(stream) == "你好"
+    assert list(stream) == ["呀。"]
+
+
+def test_stream_responses_protocol_switch_and_cache(upstream):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("chat/completions"):
+            return httpx.Response(
+                400, json={"error": {"message": "requires the responses protocol"}}
+            )
+        body = json.loads(request.content)
+        assert body["stream"] is True and body["store"] is False
+        assert body["instructions"] == "你是菜菜"
+        return sse(
+            {"type": "response.output_text.delta", "delta": "你好。"},
+            {"type": "response.completed"},
+        )
+
+    upstream(handler)
+    client = OpenAICompatibleClient(45)
+    messages = [{"role": "system", "content": "你是菜菜"}]
+    assert list(client.stream(site(), "demo", messages)) == ["你好。"]
+    assert list(client.stream(site(), "demo", messages)) == ["你好。"]
+    assert calls == ["/v1/chat/completions", "/v1/responses", "/v1/responses"]
+
+
+@pytest.mark.parametrize("ending", [None, "length", "content_filter"])
+def test_stream_rejects_truncation_and_does_not_retry(upstream, ending):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        events = [{"choices": [{"delta": {"content": "已收到的文字"}}]}]
+        if ending:
+            events.append({"choices": [{"delta": {}, "finish_reason": ending}]})
+        return sse(*events)
+
+    upstream(handler)
+    stream = OpenAICompatibleClient(45).stream(site(), "demo", [])
+    assert next(stream) == "已收到的文字"
+    with pytest.raises(ServiceError, match="完整的流式回答"):
+        list(stream)
+    assert len(calls) == 1
+
+
+def test_stream_accepts_gateway_json_fallback(upstream):
+    upstream(
+        lambda request: httpx.Response(
+            200, json={"choices": [{"message": {"content": "兼容回复"}}]}
+        )
+    )
+    assert list(OpenAICompatibleClient(45).stream(site(), "demo", [])) == ["兼容回复"]
+
+
 @pytest.fixture
 def upstream(monkeypatch):
     monkeypatch.setenv("TEST_LLM_KEY", "private-key-never-log")

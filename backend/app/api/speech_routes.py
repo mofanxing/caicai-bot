@@ -88,6 +88,27 @@ def speech_job(job_id: str, db=Depends(get_db)):
     return find_job(db, job_id)
 
 
+@speech_router.post("/speech/jobs/{job_id}/retry", response_model=SpeechJobRead, status_code=202)
+def retry_speech_job(job_id: str, request: Request, db=Depends(get_db)):
+    service = request.app.state.speech_service
+    with service.guard:
+        job = find_job(db, job_id)
+        if job.status != "failed" and (
+            job.status != "completed" or service.audio_path(job.id).is_file()
+        ):
+            return job
+        find_voice(db, job.voice_id)
+        if len(job.text) > 600:
+            raise ServiceError("text_too_long", "单次语音最多支持 600 字", 422)
+        active = db.scalars(select(SpeechJob.id).where(SpeechJob.status.in_(ACTIVE))).all()
+        if len(active) >= 8:
+            raise ServiceError("speech_busy", "语音队列已满，请稍后手动重试", 409)
+        job.status, job.error = "queued", None
+        db.commit()
+        service.executor.submit(service._run, job.id)
+        return job
+
+
 @speech_router.get("/speech/jobs", response_model=list[SpeechJobRead])
 def recent_previews(db=Depends(get_db)):
     return db.scalars(

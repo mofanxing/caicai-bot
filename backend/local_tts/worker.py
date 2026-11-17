@@ -6,12 +6,36 @@ import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from contextlib import redirect_stdout
 from pathlib import Path
 
 
 def emit(payload):
     print("CAICAI_TTS:" + json.dumps(payload), flush=True)
+
+
+def cache_reference_encoding(model, evaluate, max_entries=4):
+    """Reuse reference VAE features in this worker, bounded to four recordings."""
+    encode = model._encode_wav
+    cache = OrderedDict()
+
+    def cached(audio_input, padding_mode="right", trim_silence_vad=False):
+        if not isinstance(audio_input, str):
+            return encode(audio_input, padding_mode, trim_silence_vad)
+        path = Path(audio_input)
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size, padding_mode, trim_silence_vad)
+        if key not in cache:
+            value = encode(audio_input, padding_mode, trim_silence_vad)
+            evaluate(value)
+            cache[key] = value
+            if len(cache) > max_entries:
+                cache.popitem(last=False)
+        cache.move_to_end(key)
+        return cache[key]
+
+    model._encode_wav = cached
 
 
 def segments(text, limit=120):
@@ -56,6 +80,7 @@ def main():
             from mlx_audio.tts.utils import load_model
 
             model = load_model(str(Path(args.model).resolve()))
+            cache_reference_encoding(model, mx.eval)
         emit({"type": "ready"})
     except Exception as exc:
         emit({"type": "load_error", "error_type": type(exc).__name__})
@@ -94,7 +119,7 @@ def main():
                 temporary = destination.with_suffix(".tmp.wav")
                 sf.write(str(temporary), combined, sample_rate, subtype="PCM_16")
                 temporary.replace(destination)
-                mx.clear_cache()
+                # Keep the allocator warm between sentences; reference features are bounded.
             emit(
                 {
                     "type": "result",

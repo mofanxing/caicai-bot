@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Avatar, Badge, Button, Card, Collapse,
-  Dropdown, Empty, Form, Input, Modal, Select, Skeleton, Spin, Tag, Tooltip,
+  Dropdown, Empty, Form, Input, Modal, Select, Skeleton, Spin, Switch, Tag, Tooltip,
 } from 'antd';
 import {
   ArrowRightOutlined, AudioOutlined, CheckCircleFilled, CheckOutlined, CloudServerOutlined,
@@ -12,7 +12,7 @@ import {
 } from '@ant-design/icons';
 import { createApi, type Api } from './api';
 import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile } from './types';
-import { MessageSpeech, VoicesPage } from './speech';
+import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
 
 type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
@@ -130,7 +130,7 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
           placeholder="例如：你是菜菜，用简短、自然的语言与我聊天。" />
       </Form.Item>
       <Form.Item name="reply_mode" label="回复方式"><Select disabled={disabled || saving} options={[
-        { value: 'text', label: '文字（可手动朗读）' }, { value: 'both', label: '文字 + 本地语音' },
+        { value: 'text', label: '文字（可手动朗读）' }, { value: 'both', label: '文字 + 语音同步生成' },
       ]} /></Form.Item>
       <Form.Item name="voice_id" label="朗读音色" rules={replyMode !== 'text' ? [{ required: true, message: '请先添加并选择音色' }] : []}>
         <Select allowClear disabled={disabled || saving} placeholder="在音色与语音页面上传录音"
@@ -138,7 +138,7 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
       </Form.Item>
       <Form.Item name="voice_prompt" label="语音表达提示词"><Input.TextArea rows={2} maxLength={500}
         disabled={disabled || saving} placeholder="留空跟随音色默认语气，例如：温柔自然，语速稍慢" /></Form.Item>
-      <p className="muted compact">语气控制发声，角色设定控制回复内容。语音后台生成，失败时保留文字；单次最多 600 字。</p>
+      <p className="muted compact">文字边生成边显示，语音合并短句后分段合成。打开顶部「自动朗读」，默认缓冲后连读，也可切换低延迟。最多朗读前 600 字，首次加载模型较慢。</p>
       {dirty && <p className="unsaved">有未保存的修改，保存后新消息才会使用。</p>}
       <Button htmlType="submit" type="primary" block loading={saving} disabled={disabled}>保存聊天设置</Button>
     </Form>
@@ -297,6 +297,11 @@ export default function App() {
   const [historyError, setHistoryError] = useState('');
   const [draft, setDraft] = useState('');
   const [pendingText, setPendingText] = useState('');
+  const [autoRead, setAutoRead] = useState(() => localStorage.getItem('caicai.auto-read') !== 'false');
+  const [autoReadMessage, setAutoReadMessage] = useState('');
+  const [playbackMode, setPlaybackMode] = useState<'smooth' | 'realtime'>(() =>
+    localStorage.getItem('caicai.playback-mode') === 'realtime' ? 'realtime' : 'smooth');
+  const streamController = useRef<AbortController | null>(null);
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -386,6 +391,12 @@ export default function App() {
     if (connected) sessionStorage.setItem(PAGE_STORAGE, page);
   }, [connected, page]);
 
+  useEffect(() => () => streamController.current?.abort(), []);
+  useEffect(() => {
+    stopSpeechPlayback();
+    setAutoReadMessage('');
+  }, [activeId, page]);
+
   async function loadHistory(id: string) {
     const requestId = ++historyRequest.current;
     setHistoryLoading(true); setHistoryError('');
@@ -412,6 +423,8 @@ export default function App() {
   }, [history, pendingText]);
 
   function disconnect() {
+    stopSpeechPlayback();
+    streamController.current?.abort(); setAutoReadMessage('');
     connectionRequest.current++; historyRequest.current++;
     sessionStorage.removeItem(TOKEN_STORAGE); sessionStorage.removeItem(CONVERSATION_STORAGE);
     sessionStorage.removeItem(PAGE_STORAGE);
@@ -439,15 +452,45 @@ export default function App() {
       message.warning('请先在右侧选择中转站和模型，保存后再发送。'); return;
     }
     const text = draft.trim();
+    if (autoRead && active.reply_mode !== 'text') void prepareSpeechPlayback().catch(() => {});
+    stopSpeechPlayback();
+    const conversationId = active.id;
+    const externalId = crypto.randomUUID();
+    let streamedId = '';
+    const controller = new AbortController(); streamController.current = controller;
+    setAutoReadMessage('');
     sendLock.current = true; setSending(true); setPendingText(text); setDraft(''); setHistoryError('');
     try {
-      const result = await api.send(active.id, text, crypto.randomUUID());
+      const result = await api.sendStream(conversationId, text, externalId, event => {
+        if (controller.signal.aborted) return;
+        if (event.type === 'start') {
+          streamedId = event.message_id;
+          setPendingText(''); setAutoReadMessage(streamedId);
+          setHistory(previous => [...previous, { id: streamedId, external_id: externalId, user_text: text,
+            assistant_text: '', status: 'processing', speech_job_id: null, speech_job_ids: [] }]);
+        } else if (event.type === 'delta') {
+          setHistory(previous => previous.map(turn => turn.id === streamedId
+            ? { ...turn, assistant_text: (turn.assistant_text || '') + event.text } : turn));
+        } else if (event.type === 'speech') {
+          setHistory(previous => previous.map(turn => turn.id === streamedId
+            ? { ...turn, speech_job_id: turn.speech_job_id || event.job_id,
+              speech_job_ids: [...(turn.speech_job_ids || []), event.job_id] } : turn));
+        } else if (event.type === 'notice') message.info(event.message);
+        else if (event.type === 'done') {
+          setHistory(previous => {
+            const found = previous.some(turn => turn.id === event.message.id);
+            return found ? previous.map(turn => turn.id === event.message.id ? event.message : turn)
+              : [...previous, event.message];
+          });
+        }
+      }, controller.signal);
       if (result.status !== 'completed' && result.status !== 'sent') {
         message.warning('消息状态：' + result.status + '，请查看记录后再决定是否重发。');
       }
     } catch (error) { message.error(errorText(error), 7); }
     finally {
-      await loadHistory(active.id);
+      if (!controller.signal.aborted) await loadHistory(conversationId);
+      if (streamController.current === controller) streamController.current = null;
       setPendingText(''); setSending(false); sendLock.current = false;
     }
   }
@@ -506,7 +549,13 @@ export default function App() {
       <Select aria-label="选择测试会话" value={activeId || undefined} placeholder="创建你的第一个会话" disabled={busy}
         onChange={setActiveId} options={debugConversations.map(c => ({ value: c.id, label: c.peer_id }))} />
       <Button icon={<PlusOutlined />} disabled={busy} onClick={() => { setNewChatName('测试会话 ' + (debugConversations.length + 1)); setNewChatOpen(true); }}>新建会话</Button>
-    </div><span className="toolbar-caption"><SafetyCertificateOutlined /> 聊天记录保存在本地后端</span></div>
+    </div><div className="chat-reading-options"><label><Switch size="small" checked={autoRead} aria-label="自动朗读新回复"
+      onChange={checked => { if (checked) void prepareSpeechPlayback().catch(() => {});
+        setAutoRead(checked); localStorage.setItem('caicai.auto-read', String(checked)); }} /> 自动朗读</label>
+      <Select aria-label="朗读策略" size="small" value={playbackMode} options={[
+        { value: 'smooth', label: '流畅优先 · 缓冲后连读' }, { value: 'realtime', label: '低延迟 · 就绪即播' },
+      ]} onChange={value => { setPlaybackMode(value); localStorage.setItem('caicai.playback-mode', value); }} />
+      <span className="toolbar-caption"><SafetyCertificateOutlined /> 聊天记录保存在本地后端</span></div></div>
     <div className="chat-grid"><section className="chat-panel" aria-label="聊天消息">
       <div className="chat-panel-header"><div><Avatar src="/favicon.svg" shape="square" size={40} /><div><strong>菜菜</strong>
         <span>{active?.provider_id ? activeProvider?.name || '中转站模型' : '本地模拟模式'}{active?.model_id ? ' / ' + active.model_id : ''}</span></div></div>
@@ -530,12 +579,15 @@ export default function App() {
           </div>}
           {history.map(turn => <div className="chat-turn" key={turn.id}><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{turn.user_text}</div></div><Avatar>我</Avatar></div>
             {turn.assistant_text && <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="message-content"><span>菜菜</span><div className="bubble">{turn.assistant_text}</div>
-              <MessageSpeech api={api} conversationId={activeId} messageId={turn.id} initialJobId={turn.speech_job_id || null} canGenerate={!!active?.voice_id && !busy} /></div></div>}
-            {!['completed', 'sent'].includes(turn.status) && <div className="message-status"><Tag color={turn.status === 'failed' ? 'error' : 'warning'}>{({ failed: '处理失败', delivery_unknown: '投递结果待核查', processing: '处理中，请刷新记录', sending: '发送结果待确认' } as Record<string, string>)[turn.status] || turn.status}</Tag></div>}
+              <MessageSpeech api={api} conversationId={activeId} messageId={turn.id} initialJobId={turn.speech_job_id || null}
+                jobIds={turn.speech_job_ids} autoPlay={autoRead && autoReadMessage === turn.id && page === 'chat'}
+                playbackMode={playbackMode}
+                streaming={sending && turn.status === 'processing'} canGenerate={!!active?.voice_id && !busy} /></div></div>}
+            {!['completed', 'sent'].includes(turn.status) && <div className="message-status"><Tag color={turn.status === 'failed' ? 'error' : 'warning'}>{turn.status === 'processing' && sending ? '正在生成回复…' : ({ failed: '处理失败', delivery_unknown: '投递结果待核查', processing: '处理中，请刷新记录', sending: '发送结果待确认' } as Record<string, string>)[turn.status] || turn.status}</Tag></div>}
             <div className="turn-actions"><Button type="text" size="small" danger icon={<DeleteOutlined />}
               aria-label="删除这一轮对话" disabled={busy || historyLoading} onClick={() => confirmDelete('turn', turn.id)}>删除这轮对话</Button></div>
           </div>)}
-          {sending && <><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{pendingText}</div></div><Avatar>我</Avatar></div>
+          {sending && pendingText && <><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{pendingText}</div></div><Avatar>我</Avatar></div>
             <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="typing-bubble"><span /><span /><span /><small>菜菜正在想一想</small></div></div></>}
         </>}
       </div><div className="composer"><Input.TextArea aria-label="聊天内容" value={draft} onChange={event => setDraft(event.target.value)}

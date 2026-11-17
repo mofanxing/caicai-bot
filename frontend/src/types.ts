@@ -36,7 +36,16 @@ export interface ChatMessage {
   assistant_text: string | null;
   status: 'processing' | 'completed' | 'sending' | 'sent' | 'failed' | 'delivery_unknown';
   speech_job_id: string | null;
+  speech_job_ids?: string[];
 }
+
+export type ChatStreamEvent =
+  | { type: 'start'; message_id: string }
+  | { type: 'delta'; text: string }
+  | { type: 'speech'; job_id: string }
+  | { type: 'notice'; message: string }
+  | { type: 'error'; message: string; code?: string }
+  | { type: 'done'; message: ChatMessage };
 
 export interface VoiceProfile {
   id: string; name: string; reference_text: string; style_prompt: string;

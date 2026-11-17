@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from urllib.parse import urlsplit
@@ -85,7 +86,7 @@ class OpenAICompatibleClient:
     def forget_provider(self, provider_id: str):
         self._responses_models = {key for key in self._responses_models if key[0] != provider_id}
 
-    def _request(self, provider: Provider, method: str, path: str, **kwargs):
+    def _credentials(self, provider: Provider):
         if not safe_api_url(provider.base_url):
             raise ServiceError("unsafe_provider_url", "为保护密钥，外部模型站点必须使用 HTTPS", 409)
         if provider.api_key_encrypted:
@@ -96,12 +97,16 @@ class OpenAICompatibleClient:
             key = os.environ.get(provider.api_key_env or "", "")
         if not key:
             raise ServiceError("provider_key_missing", "中转站 API Key 未配置", 409)
+        return {"Authorization": f"Bearer {key}"}
+
+    def _request(self, provider: Provider, method: str, path: str, **kwargs):
+        headers = self._credentials(provider)
         try:
             with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
                 response = client.request(
                     method,
                     f"{provider.base_url.rstrip('/')}/{path}",
-                    headers={"Authorization": f"Bearer {key}"},
+                    headers=headers,
                     **kwargs,
                 )
                 response.raise_for_status()
@@ -147,6 +152,117 @@ class OpenAICompatibleClient:
             return sorted({item["id"] for item in payload["data"] if isinstance(item["id"], str)})
         except (KeyError, TypeError) as exc:
             raise ServiceError("invalid_models_response", "模型列表响应格式不兼容", 502) from exc
+
+    def stream(self, provider: Provider, model: str, messages: list[dict]):
+        cache_key = (provider.id, provider.base_url, model)
+        responses = cache_key in self._responses_models
+        try:
+            yield from self._stream(provider, model, messages, responses)
+        except _ResponsesProtocolRequired:
+            self._responses_models.add(cache_key)
+            yield from self._stream(provider, model, messages, True)
+
+    def _stream(self, provider, model, messages, responses):
+        headers = self._credentials(provider)
+        path = "chat/completions"
+        body = {"model": model, "messages": messages, "stream": True}
+        if responses:
+            path = "responses" if urlsplit(provider.base_url).path.strip("/") else "v1/responses"
+            body = {
+                "model": model,
+                "stream": True,
+                "store": False,
+                "input": [m for m in messages if m["role"] != "system"],
+            }
+            instructions = "\n".join(m["content"] for m in messages if m["role"] == "system")
+            if instructions:
+                body["instructions"] = instructions
+        received, finished = False, False
+        try:
+            with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
+                with client.stream(
+                    "POST",
+                    f"{provider.base_url.rstrip('/')}/{path}",
+                    headers=headers,
+                    json=body,
+                ) as response:
+                    if not response.is_success:
+                        response.read()
+                        if (
+                            not responses
+                            and response.status_code in (400, 422)
+                            and requires_responses(response)
+                        ):
+                            raise _ResponsesProtocolRequired()
+                        raise upstream_http_error(response.status_code)
+                    # Some compatible gateways return ordinary JSON even for stream=True.
+                    if "application/json" in response.headers.get("content-type", ""):
+                        payload = json.loads(response.read())
+                        if responses:
+                            if payload.get("status") not in (None, "completed"):
+                                raise ValueError("Incomplete response")
+                            content = "".join(
+                                part.get("text", "")
+                                for item in payload.get("output", [])
+                                if item.get("type") == "message"
+                                for part in item.get("content", [])
+                                if part.get("type") == "output_text"
+                            )
+                        else:
+                            content = payload["choices"][0]["message"]["content"]
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError("Empty response")
+                        yield content
+                        return
+                    data = []
+                    for line in response.iter_lines():
+                        if line.startswith("data:"):
+                            data.append(line[5:].lstrip())
+                            continue
+                        if line or not data:
+                            continue
+                        raw, data = "\n".join(data), []
+                        if raw == "[DONE]":
+                            finished = True
+                            break
+                        payload = json.loads(raw)
+                        if payload.get("error") or payload.get("type") in (
+                            "error",
+                            "response.failed",
+                            "response.incomplete",
+                        ):
+                            raise ValueError("Upstream stream failed")
+                        content = None
+                        if responses:
+                            if payload.get("type") == "response.output_text.delta":
+                                content = payload.get("delta")
+                            if payload.get("type") == "response.completed":
+                                finished = True
+                        else:
+                            for choice in payload.get("choices", []):
+                                if choice.get("index", 0) != 0:
+                                    continue
+                                content = choice.get("delta", {}).get("content")
+                                reason = choice.get("finish_reason")
+                                if reason is not None:
+                                    if reason != "stop":
+                                        raise ValueError("Incomplete chat completion")
+                                    finished = True
+                        if isinstance(content, str) and content:
+                            received = True
+                            yield content
+                    if not received or not finished:
+                        raise ValueError("Interrupted or empty stream")
+        except httpx.TimeoutException as exc:
+            raise ServiceError("llm_timeout", "模型流式回复超时，已保留收到的文字", 504) from exc
+        except httpx.RequestError as exc:
+            raise ServiceError(
+                "llm_connection_error", "模型连接中断，请检查网络或站点状态", 502
+            ) from exc
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ServiceError(
+                "llm_invalid_stream", "模型未返回完整的流式回答，请检查记录后重试", 502
+            ) from exc
 
     def complete(self, provider: Provider, model: str, messages: list[dict]) -> str:
         cache_key = (provider.id, provider.base_url, model)

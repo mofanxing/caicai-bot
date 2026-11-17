@@ -1,9 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, createApi, request } from './api';
+import { waitFor } from '@testing-library/react';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('backend API client', () => {
+  it('decodes split UTF-8 SSE frames and delivers text before completion', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body));
+    vi.stubGlobal('fetch', fetchMock);
+    const events = vi.fn();
+    const promise = createApi('token').sendStream('c1', '你好', 'stream-id', events);
+    const bytes = new TextEncoder().encode(': keepalive\r\n\r\ndata: {"type":"delta","text":"你好。"}\r\n\r\n');
+    for (let i = 0; i < bytes.length; i += 2) controller.enqueue(bytes.slice(i, i + 2));
+    await waitFor(() => expect(events).toHaveBeenCalledWith({ type: 'delta', text: '你好。' }));
+    const result = { id: 'm1', status: 'completed', assistant_text: '你好。' };
+    controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'done', message: result }) + '\n\n'));
+    await expect(promise).resolves.toEqual(result);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer token');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).external_id).toBe('stream-id');
+  });
+
+  it('reports stream failures and early disconnects without retrying the request', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response('data: {"type":"error","message":"模型超时"}\n\n'));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(createApi('token').sendStream('c1', '你好', 'id', vi.fn())).rejects.toThrow('模型超时');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockResolvedValueOnce(new Response('data: {"type":"delta","text":"部分回答"}\n\n'));
+    await expect(createApi('token').sendStream('c1', '你好', 'id', vi.fn())).rejects.toThrow('回复连接中断');
+  });
   it('uploads multipart audio without overriding its boundary and authenticates blob reads', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'v1' })))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } }));

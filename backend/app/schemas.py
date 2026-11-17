@@ -118,6 +118,7 @@ class MessageRead(BaseModel):
     assistant_text: str | None
     status: str
     speech_job_id: str | None = None
+    speech_job_ids: list[str] = Field(default_factory=list)
 
 
 class VoiceRead(BaseModel):

@@ -1,5 +1,60 @@
 import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate,
-  VoiceProfile, SpeechStatus, SpeechJob } from './types';
+  VoiceProfile, SpeechStatus, SpeechJob, ChatStreamEvent } from './types';
+
+export async function streamChat(token: string, id: string, text: string, externalId: string,
+  onEvent: (event: ChatStreamEvent) => void, signal?: AbortSignal): Promise<ChatMessage> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  let timer: ReturnType<typeof setTimeout>;
+  const armTimeout = () => { clearTimeout(timer); timer = setTimeout(abort, 75000); };
+  armTimeout();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetch('/api/v1/debug/conversations/' + encodeURIComponent(id) + '/messages/stream', {
+      method: 'POST', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ text, external_id: externalId }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new ApiError(response.status === 401 ? '管理令牌不正确，请在连接设置中重新填写。'
+        : payload?.error?.message || '无法开始流式回复，请检查后端。', response.status, payload?.error?.code);
+    }
+    reader = response.body?.getReader();
+    if (!reader) throw new ApiError('浏览器未提供流式响应，请升级浏览器。', 502);
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      armTimeout();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary: RegExpExecArray | null;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trimStart()).join('\n');
+        if (!data) continue;
+        const event = JSON.parse(data) as ChatStreamEvent;
+        if (event.type === 'error') throw new ApiError(event.message, 502, event.code);
+        onEvent(event);
+        if (event.type === 'done') return event.message;
+      }
+      if (done) break;
+    }
+    throw new ApiError('回复连接中断，请刷新记录查看已保存的内容，避免重复发送。', 502);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (controller.signal.aborted) throw new ApiError('回复连接已断开或超时，请刷新记录查看结果。', 408);
+    throw new ApiError('流式回复连接异常，请刷新记录后重试。', 0);
+  } finally {
+    clearTimeout(timer!); signal?.removeEventListener('abort', abort);
+    await reader?.cancel().catch(() => {});
+    reader?.releaseLock();
+  }
+}
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code?: string) {
@@ -44,6 +99,8 @@ export async function request<T>(token: string, path: string, init: RequestInit 
 }
 
 export const createApi = (token: string) => ({
+  sendStream: (id: string, text: string, externalId: string, onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal) => streamChat(token, id, text, externalId, onEvent, signal),
   speechStatus: () => request<SpeechStatus>(token, '/speech/status'),
   voices: () => request<VoiceProfile[]>(token, '/voices'),
   uploadVoice: (body: FormData) => request<VoiceProfile>(token, '/voices', { method: 'POST', body }),
@@ -55,6 +112,7 @@ export const createApi = (token: string) => ({
       method: 'POST', body: JSON.stringify({ text, style_prompt: stylePrompt }),
     }),
   speechJob: (id: string) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id)),
+  retrySpeechJob: (id: string) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' }),
   speechJobs: () => request<SpeechJob[]>(token, '/speech/jobs'),
   speechAudio: (id: string) => request<Blob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/audio', {}, 'blob'),
   deleteSpeechJob: (id: string) => request<{ deleted: boolean }>(

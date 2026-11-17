@@ -1,8 +1,14 @@
+import json
+import logging
+from queue import Empty, Queue
 from secrets import compare_digest
+from threading import Thread
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from app.core.errors import ServiceError
 from app.models import Conversation, Message, Provider, Voice
@@ -171,6 +177,7 @@ def get_messages(conversation_id: str, db=Depends(get_db)):
     return db.scalars(
         select(Message)
         .where(Message.conversation_id == conversation_id)
+        .options(selectinload(Message.speech_jobs))
         .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(100)
     ).all()
@@ -227,6 +234,62 @@ def debug_message(
     if conversation.channel != "debug":
         raise ServiceError("wrong_channel", "调试接口只接受 debug 会话", 409)
     return request.app.state.chat_service.handle(db, conversation, payload)
+
+
+@admin.post("/debug/conversations/{conversation_id}/messages/stream")
+def debug_message_stream(
+    conversation_id: str, payload: IncomingMessage, request: Request, db=Depends(get_db)
+):
+    if request.app.state.settings.app_env == "production":
+        raise ServiceError("not_found", "接口不存在", 404)
+    conversation = find_conversation(db, conversation_id)
+    if conversation.channel != "debug":
+        raise ServiceError("wrong_channel", "调试接口只接受 debug 会话", 409)
+    events = Queue()
+
+    def generate():
+        # Own the session for the whole generation, including after a browser disconnect.
+        with request.app.state.session_factory() as session:
+            try:
+                current = find_conversation(session, conversation_id)
+                result = request.app.state.chat_service.handle(
+                    session, current, payload, on_event=events.put
+                )
+                session.refresh(result)
+                session.expire(result, ["speech_jobs"])
+                events.put(
+                    {"type": "done", "message": MessageRead.model_validate(result).model_dump()}
+                )
+            except ServiceError as exc:
+                events.put({"type": "error", "message": exc.message, "code": exc.code})
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Streaming chat failed: kind=%s", type(exc).__name__
+                )
+                events.put({"type": "error", "message": "回复生成失败，请刷新记录后重试"})
+            finally:
+                events.put(None)
+
+    def stream():
+        Thread(target=generate, name="chat-stream", daemon=True).start()
+        while True:
+            try:
+                event = events.get(timeout=10)
+            except Empty:
+                yield ": keepalive\n\n"
+                continue
+            if event is None:
+                break
+            yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def require_wechat_token(request: Request, authorization: str = Header(default="")):
