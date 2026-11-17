@@ -12,4 +12,7 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 frontend/test-results/
+desktop/.cache/
+desktop/.data/
+desktop/dist/
 

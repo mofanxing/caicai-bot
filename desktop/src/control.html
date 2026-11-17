@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'">
+<title>菜菜 · 桌宠控制面板</title><style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#25362f;background:#f3f6f2}body{margin:0;padding:32px}h1{font-size:26px;margin:0 0 8px}h2{font-size:17px;margin-top:0}p{line-height:1.7;color:#5c6e63}.card{background:white;border:1px solid #dce4dc;border-radius:16px;padding:20px;margin:20px 0}button,select{font:inherit;padding:10px 14px;border-radius:9px;border:1px solid #c9d6cb}button{background:#2f654c;color:white;cursor:pointer}button:disabled{opacity:.5;cursor:wait}select{max-width:100%;margin:0 8px 12px 0;background:white}#message{color:#a13030;min-height:24px;font-size:14px}small{color:#66786b;line-height:1.8;overflow-wrap:anywhere}.row{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}.badge{font-size:13px;color:#2f654c}code{font-size:12px;overflow-wrap:anywhere}
+</style></head><body>
+<h1>菜菜，先住进桌面</h1><p>保留 dsh-pet 的动画、拖拽、互动与角色包。</p>
+<div class="card"><h2>桌宠形象</h2><select id="pets" aria-label="桌宠形象"></select><button id="select">切换形象</button>
+<p>切换会保存选择；关闭这个面板后桌宠仍然常驻。右键桌宠可使用原有动作与显示菜单，从托盘退出程序。</p><small>只有一个形象时，可按 desktop/README.md 安装新的上游格式角色包。</small></div>
+<div class="card"><div class="row"><h2>菜菜工作台</h2><span id="backend" class="badge">检查后端连接…</span></div>
+<p>在现有工作台管理模型、音色和聊天。本阶段完成桌宠底座；桌面内的正式聊天与语音联动尚未接通。</p><button id="workbench">打开工作台</button><p><small id="address"></small></p></div>
+<div id="message" role="status"></div><small>默认“大肥鱼”形象用于个人非商业验证。来源：PC2005-cloud/dsh-pet；形象遵循 CC BY-NC-SA 4.0，详见 THIRD_PARTY_NOTICES.md。</small>
+<script>
+const token=new URLSearchParams(location.hash.slice(1)).get('token')||'';
+history.replaceState(null,'',location.pathname);
+const message=document.getElementById('message');
+async function api(path,body){const response=await fetch(path,{method:body?'POST':'GET',headers:{'X-DSH-Pet-Token':token,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});const result=await response.json();if(!response.ok)throw new Error(typeof result.error==='string'?result.error:'操作失败');return result;}
+async function refresh(){const status=await api('/caicai/status');const select=document.getElementById('pets');select.replaceChildren();for(const pet of status.pets){const option=document.createElement('option');option.value=pet.id;option.textContent=pet.name+' · '+pet.entry;option.selected=pet.display==='desktop'||pet.display==='both';select.append(option);}document.getElementById('backend').textContent=status.backendReady?'后端已连接':'后端未启动';document.getElementById('address').textContent='工作台：'+status.workbench+'；后端：'+status.backend;document.getElementById('select').disabled=!status.pets.length;}
+document.getElementById('select').onclick=async function(){this.disabled=true;message.textContent='';try{await api('/caicai/select',{id:document.getElementById('pets').value});await refresh();message.textContent='形象已切换并保存';}catch(error){message.textContent=error.message;}finally{this.disabled=false;}};
+document.getElementById('workbench').onclick=()=>api('/caicai/workbench',{}).catch(error=>message.textContent=error.message);
+refresh().catch(error=>message.textContent=error.message);
+</script></body></html>
