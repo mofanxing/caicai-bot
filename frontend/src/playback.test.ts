@@ -23,6 +23,46 @@ function outputMock() {
 }
 
 describe('persistent speech output', () => {
+  it('reports the matching transcript only after the source really starts, and clears it on pause/end', async () => {
+    const { output, sources } = outputMock();
+    const desktop = await import('./desktop');
+    const report = vi.spyOn(desktop, 'reportAudioPlayback');
+    try {
+      const { SpeechPlayback } = await import('./playback');
+      const player = new SpeechPlayback(vi.fn());
+      player.loadBuffer({ duration: 5 } as AudioBuffer, '第一段文案。');
+      expect(report).not.toHaveBeenCalled();
+      await player.play();
+      expect(report).toHaveBeenLastCalledWith(sources[0], true, 'reply', '第一段文案。');
+      output.currentTime = 1; player.pause();
+      expect(report).toHaveBeenLastCalledWith(sources[0], false, 'reply');
+      await player.play();
+      expect(report).toHaveBeenLastCalledWith(sources[1], true, 'reply', '第一段文案。');
+      sources[1].onended!();
+      expect(report).toHaveBeenLastCalledWith(sources[1], false, 'reply');
+      player.loadBuffer({ duration: 5 } as AudioBuffer, '第二段文案。');
+      await player.play();
+      expect(report).toHaveBeenLastCalledWith(sources[2], true, 'reply', '第二段文案。');
+      player.dispose();
+      expect(report).toHaveBeenLastCalledWith(sources[2], false, 'reply');
+    } finally { report.mockRestore(); }
+  });
+
+  it('does not publish a transcript when audio output fails to start', async () => {
+    const { output, sources } = outputMock();
+    const desktop = await import('./desktop');
+    const report = vi.spyOn(desktop, 'reportAudioPlayback');
+    try {
+      const { SpeechPlayback } = await import('./playback');
+      const player = new SpeechPlayback(vi.fn());
+      player.loadBuffer({ duration: 5 } as AudioBuffer, '不能提前显示。');
+      output.resume.mockRejectedValueOnce(new Error('output failed'));
+      await expect(player.play()).rejects.toThrow('output failed');
+      expect(sources).toHaveLength(0); expect(report).not.toHaveBeenCalled();
+      player.dispose();
+    } finally { report.mockRestore(); }
+  });
+
   it('resumes output synchronously during the click and reuses it after generation', async () => {
     const { output, construct, sources, blob } = outputMock();
     const { prepareSpeechPlayback, SpeechPlayback } = await import('./playback');

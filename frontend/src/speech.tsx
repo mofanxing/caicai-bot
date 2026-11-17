@@ -17,7 +17,7 @@ function announcePlayback(id: string) {
 
 export function stopSpeechPlayback() { announcePlayback(''); }
 
-export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | 'job'; id: string }) {
+export function SpeechAudio({ api, kind, id, text = '' }: { api: Api; kind: 'reference' | 'job'; id: string; text?: string }) {
   const [url, setUrl] = useState('');
   const [error, setError] = useState('');
   const [generation, setGeneration] = useState(0);
@@ -50,7 +50,7 @@ export function SpeechAudio({ api, kind, id }: { api: Api; kind: 'reference' | '
   if (error) return <div className="speech-error"><span>{error}</span>
     <Button size="small" onClick={() => setGeneration(value => value + 1)}>重新加载音频</Button></div>;
   return url ? <audio ref={audio} controls preload="metadata" src={url} onPlay={() => announcePlayback(playerId)}
-    onPlaying={event => reportAudioPlayback(event.currentTarget, true)}
+    onPlaying={event => reportAudioPlayback(event.currentTarget, true, 'reply', text)}
     onPause={event => reportAudioPlayback(event.currentTarget, false)}
     onEnded={event => reportAudioPlayback(event.currentTarget, false)}
     onWaiting={event => reportAudioPlayback(event.currentTarget, false)}
@@ -88,7 +88,7 @@ export function SpeechJobPlayer({ api, jobId, onFinished, onRetry, autoPlay = fa
       : job.status === 'failed' ? <Alert type="warning" message="语音未生成，文字内容已保留" description={job.error}
         action={onRetry && <Button size="small" onClick={onRetry}>重试语音</Button>} />
       : autoPlay ? <SpeechPlaylist api={api} jobIds={[job.id]} autoPlay />
-      : <><SpeechAudio api={api} kind="job" id={job.id} /><small className="muted">
+      : <><SpeechAudio api={api} kind="job" id={job.id} text={job.text} /><small className="muted">
         本地生成 · {job.duration_seconds?.toFixed(1)} 秒音频 · 合成耗时 {job.generation_seconds?.toFixed(1)} 秒</small></>}
   </div>;
 }
@@ -185,7 +185,8 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
     const player = playback.current; const buffer = prepared.current.get(currentId);
     if (buffer && player) {
       if (loadedBuffer.current?.id === currentId && loadedBuffer.current.buffer === buffer) return;
-      player.loadBuffer(buffer); loadedBuffer.current = { id: currentId, buffer }; setReadyId(currentId);
+      player.loadBuffer(buffer, jobsRef.current[currentId]?.text || '');
+      loadedBuffer.current = { id: currentId, buffer }; setReadyId(currentId);
     } else { loadedBuffer.current = null; player?.pause(); setReadyId(''); setBuffering(true); }
   }, [currentId, preparedVersion]);
   useEffect(() => { if (enoughBuffer && readyId === currentId && readyId) setBuffering(false); },
@@ -346,12 +347,15 @@ export function VoicesPage({ api, voices, onChanged }: {
     });
   }
   return <div className="page-body voice-page">
-    <div className="section-heading"><div><h2>让回应有熟悉的声音</h2><p>上传参考录音，在本机复刻音色，用语气指令调整表达。</p></div>
+    <div className="section-heading"><div><h2>让回应有熟悉的声音</h2><p>上传参考录音，在本机复刻音色与说话方式。</p></div>
       <Button type="primary" icon={<PlusOutlined />} onClick={() => { setFile(null); uploadForm.resetFields(); setOpen(true); }}>添加音色</Button></div>
     <Card className="speech-engine"><div className="speech-engine-header"><div><AudioOutlined /> <strong>本地语音引擎</strong>
       <Tag color={status?.available ? 'green' : 'gold'}>{status?.model || 'VoxCPM2-4bit'}</Tag></div>
       <Button icon={<ReloadOutlined />} onClick={async () => { try { setStatus(await api.speechStatus()); setStatusError(''); await onChanged(); } catch (error) { setStatusError(errorText(error)); } }}>刷新状态</Button></div>
       <p className="muted">{statusError || status?.detail || '正在检查本地环境…'}</p>
+      {status?.supports_style_prompt === false && <Alert className="inline-alert" type="info"
+        message="当前音色复刻不使用自由文本语气指令"
+        description="为避免把指令念出来，当前模型只朗读正文，语气跟随参考录音。原有提示词保留，但暂不参与合成。" />}
       <small className="muted">参考录音和语音推理保留在本机 · 无云端语音调用费 · 首次生成需要加载和编译模型</small>
       {status && !status.available && <Alert className="inline-alert" type="info" message="先准备本地环境"
         description={<><p>在项目根目录执行一次，然后刷新状态：</p><code>backend/.venv/bin/python backend/local_tts/setup.py</code><p>首次会下载约 2.3 GB 模型。现在也可以先添加参考音色。</p></>} />}
@@ -360,7 +364,7 @@ export function VoicesPage({ api, voices, onChanged }: {
       {!voices.length ? <Card><Empty description="添加一段清晰录音，创建第一个参考音色" /></Card>
         : <div className="voice-list">{voices.map(voice => <Card key={voice.id} className={'voice-card ' + (selected === voice.id ? 'voice-selected' : '')}>
           <div className="voice-card-heading"><span className="voice-icon"><SoundOutlined /></span><div><h3>{voice.name}</h3><span className="muted">参考录音 {voice.duration_seconds.toFixed(1)} 秒 · 本地保存</span></div></div>
-          <p className="voice-style">{voice.style_prompt || '自然表达 · 可在试听时填写语气指令'}</p>
+          <p className="voice-style">{status?.supports_style_prompt === false ? '表达跟随参考录音' : voice.style_prompt || '自然表达'}</p>
           <div className="voice-actions"><Button type={selected === voice.id ? 'primary' : 'default'} disabled={previewing}
             onClick={() => setSelected(voice.id)}>{selected === voice.id ? '当前试听音色' : '选择试听'}</Button>
             <Button type="text" onClick={() => setReference(voice)}>听原音</Button>
@@ -371,9 +375,9 @@ export function VoicesPage({ api, voices, onChanged }: {
         <Form.Item label="试听音色"><Select value={selected || undefined} onChange={setSelected} disabled={previewing}
           placeholder="先添加一个音色" options={voices.map(voice => ({ value: voice.id, label: voice.name }))} /></Form.Item>
         <Form.Item name="text" label="要说的话" rules={[{ required: true, whitespace: true, message: '请输入试听文字' }]}><Input.TextArea rows={4} maxLength={600} showCount disabled={previewing} /></Form.Item>
-        <Form.Item name="style_prompt" label="语音表达提示词"><Input.TextArea rows={3} maxLength={500} disabled={previewing} placeholder="例如：语气温柔自然，语速稍慢，像和熟悉的人轻声聊天" /></Form.Item>
-        <div className="voice-presets">{['温柔自然，语速稍慢', '开心活泼，语气轻快', '平静清晰，自然叙述'].map(value => <Button key={value} size="small" disabled={previewing} onClick={() => previewForm.setFieldValue('style_prompt', value)}>{value}</Button>)}</div>
-        <p className="muted compact">语气指令与台词分开填写。实际音色和语气效果取决于参考录音与模型。</p>
+        <Form.Item name="style_prompt" label="语音表达提示词"><Input.TextArea rows={3} maxLength={500} disabled={previewing || status?.supports_style_prompt === false} placeholder="语气跟随参考录音" /></Form.Item>
+        {status?.supports_style_prompt !== false && <div className="voice-presets">{['温柔自然，语速稍慢', '开心活泼，语气轻快', '平静清晰，自然叙述'].map(value => <Button key={value} size="small" disabled={previewing} onClick={() => previewForm.setFieldValue('style_prompt', value)}>{value}</Button>)}</div>}
+        <p className="muted compact">只朗读“要说的话”。当前复刻模式的语气以参考录音为准。</p>
         <Button type="primary" htmlType="submit" block icon={<SoundOutlined />} loading={previewing}
           onClick={() => void prepareSpeechPlayback().catch(() => {})}
           disabled={!selected || !status?.available || !!statusError}>生成并自动试听</Button>
@@ -386,7 +390,7 @@ export function VoicesPage({ api, voices, onChanged }: {
       <Form name="voice-upload" form={uploadForm} layout="vertical" requiredMark={false} onFinish={upload}>
         <Form.Item name="name" label="音色名称" rules={[{ required: true, whitespace: true, message: '请填写音色名称' }]}><Input maxLength={100} disabled={uploading} placeholder="例如：菜菜的声音" /></Form.Item>
         <Form.Item label="参考录音" required><input key={open ? 'open' : 'closed'} aria-label="参考录音文件" type="file" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3" disabled={uploading} onChange={event => setFile(event.target.files?.[0] || null)} /><small className="muted">浏览器会在本机转换为标准 WAV，再保存到本地后端。</small></Form.Item>
-        <Form.Item name="style_prompt" label="默认语气（可选）"><Input.TextArea rows={2} maxLength={500} disabled={uploading} placeholder="语气温柔自然，语速稍慢" /></Form.Item>
+        <Form.Item name="style_prompt" label="默认语气（可选）" extra="当前本地复刻模式暂不使用该指令。"><Input.TextArea rows={2} maxLength={500} disabled={uploading || status?.supports_style_prompt === false} /></Form.Item>
         <Form.Item name="reference_text" label="录音文字备注（可选）"><Input.TextArea rows={2} maxLength={2000} disabled={uploading} placeholder="用于记录原音内容，当前复刻模式不要求提供转写" /></Form.Item>
         <Button type="primary" htmlType="submit" block loading={uploading} disabled={!file}>保存参考音色</Button>
       </Form>

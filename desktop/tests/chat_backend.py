@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="caicai-chat-backend-") as directory:
         "local_only": True,
     }
 
-    def synthesize(text, reference_path, style_prompt, output_path):
+    def synthesize(text, reference_path, style_prompt, output_path, continuation=None):
         # Keep the preparation stage observable for the cached waiting acknowledgement.
         assert style_prompt == "轻快亲切，像朋友一样回应"
         assert reference_path.is_file()

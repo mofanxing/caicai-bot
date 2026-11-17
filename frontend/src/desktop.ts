@@ -14,13 +14,16 @@ let current: DesktopState = { thinking: false, speaking: false, waiting: false }
 let reporting: Promise<unknown> = Promise.resolve();
 const audioSources = new Set<object>();
 const feedbackSources = new Set<object>();
+const spokenTexts = new Map<object, string>();
 const listeners = new Set<(state: DesktopState) => void>();
 const waitingPlayers = new Set<string>();
 export function subscribeDesktopState(listener: (state: DesktopState) => void) {
   listeners.add(listener); listener({ ...current });
   return () => { listeners.delete(listener); };
 }
-export function reportAudioPlayback(source: object, active: boolean, kind: 'reply' | 'feedback' = 'reply') {
+export function reportAudioPlayback(source: object, active: boolean, kind: 'reply' | 'feedback' = 'reply', text = '') {
+  if (active && text.trim()) spokenTexts.set(source, text);
+  else spokenTexts.delete(source);
   if (kind === 'feedback') {
     if (active) feedbackSources.add(source); else feedbackSources.delete(source);
     sendSnapshot(); return;
@@ -40,7 +43,10 @@ export function reportDesktopState(state: { thinking?: boolean; speaking?: boole
 }
 function sendSnapshot() {
   if (!isDesktop) return;
-  const body = JSON.stringify({ ...current, speaking: current.speaking || feedbackSources.size > 0 });
+  const speaking = current.speaking || feedbackSources.size > 0;
+  const sources = audioSources.size ? audioSources : feedbackSources;
+  const text = speaking ? [...sources].map(source => spokenTexts.get(source) || '').at(-1) : '';
+  const body = JSON.stringify({ ...current, speaking, ...(text ? { text } : {}) });
   reporting = reporting.catch(() => {}).then(() => fetch('/caicai/chat-state', { method: 'POST', headers: {
     ...desktopHeaders(), 'Content-Type': 'application/json',
   }, body, signal: AbortSignal.timeout(4000) })).catch(() => {});

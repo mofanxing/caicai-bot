@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.core.errors import ServiceError
 from app.main import create_app
-from app.models import Conversation, Message, Provider, SpeechJob
+from app.models import Conversation, Message, Provider, SpeechJob, Voice
 
 
 def stream_send(client, cid, text="你好。下一句。", external_id="stream-one", channel="debug"):
@@ -179,7 +179,7 @@ def engine(client, monkeypatch):
         },
     )
 
-    def synthesize(text, reference_path, style_prompt, output_path):
+    def synthesize(text, reference_path, style_prompt, output_path, continuation=None):
         assert reference_path.is_file()
         calls.append((text, style_prompt))
         output_path.write_bytes(wav_bytes())
@@ -187,6 +187,74 @@ def engine(client, monkeypatch):
 
     monkeypatch.setattr(local, "synthesize", synthesize)
     return local, calls, synthesize
+
+
+def test_stream_uses_first_clip_as_fixed_anchor_and_isolates_replies(client, engine, monkeypatch):
+    local, _, synthesize = engine
+    contexts = []
+
+    def tracked(text, reference, prompt, destination, continuation=None):
+        contexts.append(continuation)
+        return synthesize(text, reference, prompt, destination, continuation)
+
+    monkeypatch.setattr(local, "synthesize", tracked)
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    text = "我们慢慢把这个问题讲清楚，先说明原因，再一起看看应该怎样处理。" * 12
+    events = stream_send(client, cid, text)
+    ids = events[-1]["message"]["speech_job_ids"]
+    assert len(ids) >= 3
+    jobs = [wait_job(client, job_id) for job_id in ids]
+    assert all(job["status"] == "completed" for job in jobs)
+    expected = {
+        "text": jobs[0]["text"],
+        "audio_path": str(client.app.state.speech_service.audio_path(ids[0])),
+    }
+    assert contexts == [None] + [expected] * (len(ids) - 1)
+    events = stream_send(client, cid, "这是另一条回复。", external_id="another-reply")
+    for job_id in events[-1]["message"]["speech_job_ids"]:
+        assert wait_job(client, job_id)["status"] == "completed"
+    assert contexts[-1] is None
+
+
+@pytest.mark.parametrize("invalid", ["prompt", "voice", "failed", "missing", "too_long"])
+def test_stream_does_not_use_incompatible_anchor(client, engine, monkeypatch, invalid):
+    local, _, synthesize = engine
+    contexts = []
+
+    def tracked(text, reference, prompt, destination, continuation=None):
+        contexts.append(continuation)
+        return synthesize(text, reference, prompt, destination, continuation)
+
+    monkeypatch.setattr(local, "synthesize", tracked)
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    events = stream_send(client, cid, "这是第一段参考声音。")
+    mid = events[-1]["message"]["id"]
+    first_id = events[-1]["message"]["speech_job_ids"][0]
+    assert wait_job(client, first_id)["status"] == "completed"
+    service = client.app.state.speech_service
+    with client.app.state.session_factory() as db:
+        anchor = db.get(SpeechJob, first_id)
+        if invalid == "prompt":
+            anchor.style_prompt = "另一种语气"
+        elif invalid == "voice":
+            another = add_voice(client, name="另一音色")
+            anchor.voice_id = another["id"]
+        elif invalid == "failed":
+            anchor.status = "failed"
+        elif invalid == "missing":
+            service.audio_path(first_id).unlink()
+        elif invalid == "too_long":
+            anchor.duration_seconds = 31
+        db.commit()
+        job = service.enqueue(
+            db, db.get(Voice, voice["id"]), "这是下一段声音。",
+            message=db.get(Message, mid), segment=True,
+        )
+        job_id = job.id
+    assert wait_job(client, job_id)["status"] == "completed"
+    assert contexts == [None, None]
 
 
 def add_voice(client, **data):

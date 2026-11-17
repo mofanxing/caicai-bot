@@ -165,7 +165,7 @@ describe('desktop waiting voice', () => {
     expect(play).not.toHaveBeenCalled();
     reportDesktopState({ thinking: false }); reportDesktopState({ thinking: true });
     await vi.advanceTimersByTimeAsync(180);
-    expect(loadBuffer).toHaveBeenCalledWith({ duration: 1 });
+    expect(loadBuffer).toHaveBeenCalledWith({ duration: 1 }, '想一想');
   });
 
   it('cancels pending polls on mute and ignores late results', async () => {

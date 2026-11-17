@@ -256,8 +256,37 @@ class SpeechService:
                 reference = self.reference_path(job.voice_id)
                 destination = self.audio_path(job.id)
                 destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # Anchor every segment of one reply to its first completed clip.
+                # Never borrow another reply, voice, prompt, or a failed clip.
+                continuation = None
+                message = db.get(Message, job.message_id) if job.message_id else None
+                anchor = (
+                    db.get(SpeechJob, message.speech_job_id)
+                    if message and message.speech_job_id != job.id
+                    else None
+                )
+                if (
+                    anchor
+                    and anchor.message_id == job.message_id
+                    and anchor.voice_id == job.voice_id
+                    and anchor.style_prompt == job.style_prompt
+                    and anchor.purpose == job.purpose == "speech"
+                    and anchor.status == "completed"
+                    and len(anchor.text) <= 120
+                    and 0 < (anchor.duration_seconds or 0) <= 30
+                    and self.audio_path(anchor.id).is_file()
+                ):
+                    continuation = {
+                        "text": anchor.text,
+                        "audio_path": str(self.audio_path(anchor.id)),
+                    }
             try:
-                result = self.engine.synthesize(job.text, reference, job.style_prompt, destination)
+                args = (job.text, reference, job.style_prompt, destination)
+                result = (
+                    self.engine.synthesize(*args, continuation)
+                    if continuation
+                    else self.engine.synthesize(*args)
+                )
                 with wave.open(str(destination), "rb") as output:
                     if output.getnframes() <= 0:
                         raise ValueError("Empty audio")

@@ -25,19 +25,20 @@ export class SpeechPlayback {
   private generation = 0;
   private loadGeneration = 0;
   private disposed = false;
+  private text = '';
 
   constructor(private onEnded: () => void, private kind: 'reply' | 'feedback' = 'reply') {}
 
-  loadBuffer(buffer: AudioBuffer): void {
-    this.pause(); this.loadGeneration++; this.buffer = buffer; this.offset = 0;
+  loadBuffer(buffer: AudioBuffer, text = ''): void {
+    this.pause(); this.loadGeneration++; this.buffer = buffer; this.offset = 0; this.text = text;
   }
 
-  async load(blob: Blob): Promise<void> {
+  async load(blob: Blob, text = ''): Promise<void> {
     this.pause();
     this.buffer = undefined; this.offset = 0;
     const generation = ++this.loadGeneration;
     const decoded = await context().decodeAudioData(await blob.arrayBuffer());
-    if (!this.disposed && generation === this.loadGeneration) this.buffer = decoded;
+    if (!this.disposed && generation === this.loadGeneration) { this.buffer = decoded; this.text = text; }
   }
 
   async play(): Promise<void> {
@@ -54,7 +55,7 @@ export class SpeechPlayback {
       if (this.source !== source) return;
       this.source = undefined; this.offset = 0; source.disconnect(); playing(source, false, this.kind); this.onEnded();
     };
-    try { source.start(0, this.offset); playing(source, true, this.kind); }
+    try { source.start(0, this.offset); playing(source, true, this.kind, this.text); }
     catch (error) { this.source = undefined; source.disconnect(); throw error; }
   }
 

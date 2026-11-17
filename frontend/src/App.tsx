@@ -179,8 +179,8 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
         <Select allowClear disabled={disabled || saving} placeholder="在音色与语音页面上传录音"
           options={voices.map(voice => ({ value: voice.id, label: voice.name }))} />
       </Form.Item>
-      <Form.Item name="voice_prompt" label="语音表达提示词"><Input.TextArea rows={2} maxLength={500}
-        disabled={disabled || saving} placeholder="留空跟随音色默认语气，例如：温柔自然，语速稍慢" /></Form.Item>
+      <Form.Item name="voice_prompt" label="语音表达提示词" extra="当前本地复刻模式暂不使用自由文本指令，避免被念出；语气跟随参考录音。已有提示词保留。"><Input.TextArea rows={2} maxLength={500}
+        disabled placeholder="当前语气跟随参考录音" /></Form.Item>
       <div className="feedback-settings">
         <h4>思考与等待语音</h4>
         <Form.Item name="feedback_enabled" label="等待时语音回应" valuePropName="checked">
@@ -192,7 +192,7 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
         <Form.Item name="feedback_waiting_text" label="语音合成等待提示语" rules={[{ required: true, whitespace: true, message: '请填写等待提示语' }]}>
           <Input.TextArea rows={2} maxLength={100} showCount disabled={disabled || saving} />
         </Form.Item>
-        <p className="muted compact">使用当前朗读音色和语音表达提示词。保存设置不会合成；点击下方按钮会先保存，再删除上一版的两条语音并重新生成。</p>
+        <p className="muted compact">使用当前朗读音色，只合成上面填写的提示语正文。保存设置不会合成；点击下方按钮会先保存，再删除上一版的两条语音并重新生成。</p>
         <Button data-feedback-generate="true" block loading={saving || feedbackBusy} disabled={disabled || !selectedVoice || replyMode === 'text' || feedbackBusy}
           onClick={() => { void form.validateFields().then(values => save(values, true)).catch(() => {}); }}>
           保存并生成提示语音
@@ -698,7 +698,7 @@ export default function App() {
         setFeedbackGenerating(previous => generating ? id : previous === id ? null : previous);
       }} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
       : <Card title={<><SlidersOutlined /> 聊天设置</>}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="创建会话后配置模型" /></Card>}
-      <div className="next-step-card"><span className="eyebrow">LOCAL VOICE</span><h3>先给菜菜一个声音</h3><p>上传熟悉的参考录音，试听不同语气，再为当前聊天选择音色。</p>
+      <div className="next-step-card"><span className="eyebrow">LOCAL VOICE</span><h3>先给菜菜一个声音</h3><p>上传熟悉的参考录音，试听复刻效果，再为当前聊天选择音色。</p>
         <button onClick={() => setPage('voices')}>管理本地音色 <ArrowRightOutlined /></button></div>
     </aside></div></div>}
 
@@ -707,7 +707,7 @@ export default function App() {
     {page === 'channels' && <div className="page-body"><div className="section-heading"><div><h2>下一站，在微信里见</h2><p>微信接入安排在本地语音和桌宠之后。</p></div><Tag>能力预览</Tag></div>
       <div className="channel-grid"><Card><div className="channel-icon wechat"><WechatOutlined /></div><Tag color="gold">待接入</Tag><h2>普通微信好友聊天</h2><p>像和好友聊天一样，给菜菜发消息并收到回复。</p>
         <ul><li>已预留个人微信桥接接口</li><li>尚未实现扫码登录和真实消息收发</li><li>下一步验证好友文字与原生语音收发</li></ul><Button disabled block>微信登录 · 暂未开放</Button></Card>
-      <Card><div className="channel-icon voice"><AudioOutlined /></div><Tag color="green">本地语音</Tag><h2>专属音色回复</h2><p>参考录音、本地合成、语气指令和试听在独立页面管理。</p>
+      <Card><div className="channel-icon voice"><AudioOutlined /></div><Tag color="green">本地语音</Tag><h2>专属音色回复</h2><p>参考录音、本地合成和音色试听在独立页面管理。</p>
         <ul><li>音色管理与试听已开放</li><li>先安装本地模型，再生成语音</li><li>语音识别与微信语音投递后续接入</li></ul><Button block onClick={() => setPage('voices')}>打开音色与语音</Button></Card></div>
       <Alert type="info" showIcon message="现在可以测试什么？" description="添加中转站、选择模型、修改角色设定，并直接在「聊天测试」中验证文字回复。" />
     </div>}

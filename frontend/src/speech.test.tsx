@@ -8,7 +8,7 @@ import * as desktop from './desktop';
 
 const { play, pause, dispose, prepare, players } = vi.hoisted(() => ({
   play: vi.fn<() => Promise<void>>(), pause: vi.fn(), dispose: vi.fn(),
-  prepare: vi.fn<() => Promise<void>>(), players: [] as { onEnded: () => void }[],
+  prepare: vi.fn<() => Promise<void>>(), players: [] as { onEnded: () => void; loadBuffer: ReturnType<typeof vi.fn> }[],
 }));
 vi.mock('./playback', () => ({
   prepareSpeechPlayback: prepare,
@@ -43,6 +43,19 @@ function apiMock() {
 }
 
 describe('sentence playback queue', () => {
+  it('keeps prefetched text off the current segment and loads each transcript with its own audio', async () => {
+    const api = apiMock();
+    vi.mocked(api.speechJob).mockImplementation(async id => ({ ...job(id), text: id === 'j1' ? '第一段。' : '第二段。' }));
+    render(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay playbackMode="realtime" />);
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j2'));
+    expect(players[0].loadBuffer).toHaveBeenCalledTimes(1);
+    expect(players[0].loadBuffer.mock.calls[0][1]).toBe('第一段。');
+    act(() => players[0].onEnded());
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+    expect(players[0].loadBuffer.mock.calls[1][1]).toBe('第二段。');
+  });
+
   it('keeps the waiting stage continuous across job status changes and clears it on unmount', async () => {
     const waiting = vi.spyOn(desktop, 'reportSpeechWaiting');
     try {
@@ -172,5 +185,19 @@ describe('sentence playback queue', () => {
     expect(prepare).toHaveBeenCalled();
     await waitFor(() => expect(api.previewVoice).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+  });
+
+  it('explains unsupported style prompts and preserves the saved value without offering presets', async () => {
+    const api = Object.assign(apiMock(), {
+      speechJobs: vi.fn().mockResolvedValue([]),
+      speechStatus: vi.fn().mockResolvedValue({ available: true, model: 'VoxCPM2', detail: 'ready', supports_style_prompt: false }),
+    });
+    render(<AntApp><VoicesPage api={api} voices={[{ id: 'v1', name: '测试音色',
+      style_prompt: '温柔自然', reference_text: '', duration_seconds: 5, created_at: '' }]}
+      onChanged={async () => {}} /></AntApp>);
+    await screen.findByText('当前音色复刻不使用自由文本语气指令');
+    const input = screen.getByRole('textbox', { name: '语音表达提示词' }) as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true); expect(input.value).toBe('温柔自然');
+    expect(screen.queryByRole('button', { name: '开心活泼，语气轻快' })).toBeNull();
   });
 });

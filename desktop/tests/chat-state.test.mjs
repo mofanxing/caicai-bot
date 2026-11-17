@@ -15,3 +15,17 @@ test('缺少状态素材时保留气泡并回退原生动画，不硬编码角�
   for (const value of [null, [], { thinking: 'yes' }, { animation: 'unknown' }]) assert.throws(() => validateChatState(value));
   assert.deepEqual(validateChatState({ thinking: true }), { thinking: true, speaking: false, waiting: false });
 });
+
+test('同为说话阶段时，气泡逐段显示对应文字，停止后清掉旧正文', () => {
+  const first = validateChatState({ speaking: true, text: '第一段，先说原因。' });
+  const second = validateChatState({ speaking: true, text: '第二段，再说做法。' });
+  assert.equal(chatPresentation(first).text, first.text);
+  assert.equal(chatPresentation(second).text, second.text);
+  assert.notEqual(chatPresentation(first).text, chatPresentation(second).text);
+  assert.equal(chatPresentation(validateChatState({ speaking: false, text: first.text })).text, '');
+  for (const value of [null, 12, {}, '好'.repeat(601)]) {
+    assert.throws(() => validateChatState({ speaking: true, text: value }));
+  }
+  assert.equal(chatPresentation(validateChatState({ speaking: true, text: '<script>文字</script>' })).text,
+    '<script>文字</script>'); // Data stays text; the native bubble renderer handles escaping.
+});

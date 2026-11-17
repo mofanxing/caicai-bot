@@ -42,7 +42,7 @@ class LocalSpeechEngine:
             "state": state,
             "detail": detail,
             "available": state not in {"runtime_missing", "model_missing"},
-            "supports_style_prompt": True,
+            "supports_style_prompt": False,
             "local_only": True,
         }
 
@@ -61,7 +61,7 @@ class LocalSpeechEngine:
                     break
         raise ServiceError("tts_timeout", "本地语音推理超时或进程退出，请重试较短文字", 504)
 
-    def synthesize(self, text, reference_path, style_prompt, output_path):
+    def synthesize(self, text, reference_path, style_prompt, output_path, continuation=None):
         with self._lock:
             if self.stopping:
                 raise ServiceError("tts_stopped", "语音服务正在退出，稍后可手动重试", 503)
@@ -102,6 +102,8 @@ class LocalSpeechEngine:
                     "style_prompt": style_prompt,
                     "output_path": str(output_path),
                 }
+                if continuation:
+                    payload["continuation"] = continuation
                 self.process.stdin.write((json.dumps(payload) + "\n").encode())
                 self.process.stdin.flush()
                 result = self._read(deadline)

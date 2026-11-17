@@ -72,6 +72,8 @@ async function boot() {
   let chatState = { thinking: false, speaking: false, waiting: false };
   const chatPhases = new Set();
   let presentation = Promise.resolve();
+  let presentationVersion = 0;
+  const presented = new Map();
   let selecting = false;
   const logger = Object.fromEntries(['info', 'warn', 'error', 'debug'].map(level => [level, message => {
     if (level !== 'debug') console[level === 'info' ? 'log' : level](`[caicai-desktop] ${message}`);
@@ -91,19 +93,22 @@ async function boot() {
     return result;
   };
   function presentChatState(force = false) {
+    const version = ++presentationVersion;
     presentation = presentation.catch(() => {}).then(async () => {
+      if (version !== presentationVersion) return;
       const merged = readAllConfig(paths);
       for (const conf of Object.values(merged)) for (const pet of conf.pets) {
         if (!['desktop', 'both'].includes(pet.display)) continue;
         const view = chatPresentation(chatState, conf.animations);
-        const key = pet.id + ':' + view.phase;
-        if (!force && presentChatState.last === key) continue;
-        presentChatState.last = key;
+        const previous = presented.get(pet.id);
+        if (!force && previous?.phase === view.phase && previous?.text === view.text) continue;
         const suffix = '?pet=' + encodeURIComponent(pet.id) + '&surface=desktop';
         try {
-          if (view.animation) await api('/anim' + suffix, { name: view.animation });
-          if (view.text) await api('/broadcast' + suffix, { text: view.text, anim: false, speak: false, duration: 60000 });
+          if (view.animation && (force || previous?.phase !== view.phase)) await api('/anim' + suffix, { name: view.animation });
+          if (version !== presentationVersion) return;
+          if (view.text) await api('/broadcast' + suffix, { text: view.text, anim: false, speak: false, duration: 240000 });
           else await api('/bubble/clear' + suffix, {});
+          presented.set(pet.id, view);
         } catch { /* 睡眠或交互占用期间尊重原生门禁，不打断聊天。 */ }
       }
     });

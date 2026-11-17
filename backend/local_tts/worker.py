@@ -65,6 +65,90 @@ def segments(text, limit=120):
     return [chunk.strip() for chunk in chunks if chunk.strip()]
 
 
+def match_speech_level(audio, sample_rate, np):
+    """Apply one bounded gain per clip, measuring active 20 ms frames, not silence.
+
+    This is RMS matching, not perceptual LUFS normalization. Keep natural
+    within-sentence dynamics; cap amplification at 6 dB and peaks at -1 dBFS.
+    """
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if not len(audio) or not np.all(np.isfinite(audio)) or sample_rate <= 0:
+        raise ValueError("Invalid generated audio")
+    frame_size = max(1, int(sample_rate * 0.02))
+    # Do not let padding dilute the last frame's energy.
+    squares = np.square(audio.astype(np.float64))
+    starts = np.arange(0, len(audio), frame_size)
+    counts = np.minimum(frame_size, len(audio) - starts)
+    energy = np.add.reduceat(squares, starts) / counts
+    frame_rms = np.sqrt(energy)
+    active = frame_rms >= max(float(frame_rms.max()) * 0.1, 1e-4)
+    gain = 1.0
+    if np.any(active):
+        rms = float(np.sqrt(np.average(energy[active], weights=counts[active])))
+        gain = float(np.clip(0.1 / rms, 10 ** (-12 / 20), 10 ** (6 / 20)))
+    peak = float(np.max(np.abs(audio)))
+    if peak:
+        gain = min(gain, 10 ** (-1 / 20) / peak)
+    return (audio * gain).astype(np.float32)
+
+
+def synthesize_request(model, request, mx, np, sf):
+    """Use a fixed reply anchor, with the original voice reference on every call.
+
+    A fixed anchor avoids recursively adopting drift from each new segment.
+    Continuation audio is conditioning only; it is never added to the output.
+    """
+    chunks = segments(request["text"])
+    if not chunks:
+        raise ValueError("Empty speech text")
+    context = request.get("continuation")
+    anchor = None
+    anchor_text = None
+    if context:
+        anchor_text = context["text"]
+        anchor = context["audio_path"]
+        info = sf.info(anchor)
+        if not anchor_text.strip() or len(anchor_text) > 120 or not 0 < info.duration <= 30:
+            raise ValueError("Invalid continuation anchor")
+    audio, sample_rate, duration = [], None, 0.0
+    for chunk in chunks:
+        mx.random.seed(42)
+        options = {
+            "text": chunk,
+            "ref_audio": request["reference_path"],
+            "max_tokens": 1500,
+            "inference_timesteps": 10,
+            "cfg_value": 2.0,
+        }
+        # MLX VoxCPM2 implements instruct by prepending it to text. In reference
+        # cloning this can speak the instruction aloud. Keep cloning text-only;
+        # style_prompt remains saved metadata, never model transcript input.
+        if anchor is not None:
+            options.update(prompt_text=anchor_text, prompt_audio=anchor)
+        result = next(model.generate(**options))
+        if getattr(result, "token_count", 0) >= 1500:
+            raise ValueError("Audio generation reached token limit")
+        rate = int(result.sample_rate)
+        if sample_rate is not None and rate != sample_rate:
+            raise ValueError("Inconsistent sample rates")
+        sample_rate = rate
+        part = match_speech_level(result.audio, sample_rate, np)
+        duration += len(part) / sample_rate
+        if duration > 240:
+            raise ValueError("Audio duration limit exceeded")
+        audio.append(part)
+        if anchor is None and len(part) / sample_rate <= 30:
+            # VoxCPM2 expects array input at its output sample rate. Its encoder
+            # resamples internally; keep the complete clip and matching transcript.
+            anchor, anchor_text = part, chunk
+    combined = np.concatenate(audio)
+    destination = Path(request["output_path"])
+    temporary = destination.with_suffix(".tmp.wav")
+    sf.write(str(temporary), combined, sample_rate, subtype="PCM_16")
+    temporary.replace(destination)
+    return round(duration, 3)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -89,42 +173,14 @@ def main():
         try:
             request = json.loads(line)
             start = time.monotonic()
-            audio = []
             with redirect_stdout(sys.stderr):
-                for chunk in segments(request["text"]):
-                    # Each independent generation starts from the same RNG state,
-                    # rather than depending on the previous segment's duration.
-                    mx.random.seed(42)
-                    result = next(
-                        model.generate(
-                            text=chunk,
-                            ref_audio=request["reference_path"],
-                            instruct=request.get("style_prompt") or None,
-                            max_tokens=1500,
-                            inference_timesteps=10,
-                            cfg_value=2.0,
-                        )
-                    )
-                    if getattr(result, "token_count", 0) >= 1500:
-                        raise ValueError("Audio generation reached token limit")
-                    part = np.asarray(result.audio, dtype=np.float32).reshape(-1)
-                    if not len(part) or not np.all(np.isfinite(part)):
-                        raise ValueError("Invalid generated audio")
-                    audio.append(part)
-                    sample_rate = int(result.sample_rate)
-                combined = np.concatenate(audio)
-                if len(combined) / sample_rate > 240:
-                    raise ValueError("Audio duration limit exceeded")
-                destination = Path(request["output_path"])
-                temporary = destination.with_suffix(".tmp.wav")
-                sf.write(str(temporary), combined, sample_rate, subtype="PCM_16")
-                temporary.replace(destination)
+                duration = synthesize_request(model, request, mx, np, sf)
                 # Keep the allocator warm between sentences; reference features are bounded.
             emit(
                 {
                     "type": "result",
                     "ok": True,
-                    "duration_seconds": round(len(combined) / sample_rate, 3),
+                    "duration_seconds": duration,
                     "generation_seconds": round(time.monotonic() - start, 3),
                 }
             )

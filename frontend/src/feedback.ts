@@ -135,7 +135,8 @@ export class WaitingFeedback {
       if (this.disposed || epoch !== this.epoch || this.said.has(phase)) return;
       const buffer = this.buffers.get(phase);
       if (!buffer) return;
-      this.said.add(phase); this.player.loadBuffer(buffer);
+      const text = phase === 'thinking' ? this.configuration?.thinkingText : this.configuration?.waitingText;
+      this.said.add(phase); this.player.loadBuffer(buffer, text || '');
       void this.player.play().catch(() => {});
     }, phase === 'thinking' ? 180 : 1200);
   }

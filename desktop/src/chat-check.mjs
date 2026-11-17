@@ -64,10 +64,23 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '桌面验收：你好菜菜');
     input.dispatchEvent(new Event('input', { bubbles: true })); }`);
   await wait("document.querySelector('.composer button')?.disabled === false");
+  const bubbleTexts = new Set();
+  let sampling = true;
+  const sampleBubbles = (async () => {
+    while (sampling) {
+      try {
+        const state = await (await fetch(origin + '/dsh-pet-7340/state', { headers })).json();
+        const text = state.pets?.main?.say?.data?.text;
+        if (text) bubbleTexts.add(text);
+      } catch { /* A later assertion still requires the actual native state observations. */ }
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  })();
   await evaluate("document.querySelector('.composer button').click()");
   await wait("document.querySelector('.message-row.assistant .bubble')?.textContent.includes('桌面链路验收') === true");
   window.close(); assert.equal(window.isDestroyed(), false); assert.equal(window.isVisible(), false);
   await wait("document.querySelector('.speech-progress')?.textContent.includes('朗读完成') === true");
+  sampling = false; await sampleBubbles;
   const playbackDurations = await evaluate('window.__caicaiPlaybackDurations');
   const feedbackClips = playbackDurations.filter(duration => Math.abs(duration - 0.75) > 0.01);
   assert.equal(feedbackClips.length, 2, '思考和语音准备各播放一次按配置生成的短句：' + JSON.stringify(playbackDurations));
@@ -83,6 +96,12 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   const history = await (await fetch(origin + `/api/v1/conversations/${conversation.id}/messages`, { headers })).json();
   assert.equal(history.length, 1); assert.equal(history[0].status, 'completed');
   assert.ok(history[0].speech_job_ids.length > 0);
+  const segments = await Promise.all(history[0].speech_job_ids.map(async id =>
+    (await fetch(origin + '/api/v1/speech/jobs/' + id, { headers })).json()));
+  assert.ok(segments.length >= 2, '验收必须覆盖多段语音');
+  for (const segment of segments) {
+    assert.ok(bubbleTexts.has(segment.text), '原生桌宠气泡未显示对应语音段：' + segment.text);
+  }
   for (let i = 0; i < 40 && !chatPhases.has('speaking'); i++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.ok(chatPhases.has('thinking')); assert.ok(chatPhases.has('speaking'));
   const state = await (await fetch(origin + '/dsh-pet-7340/state', { headers })).json();
@@ -108,6 +127,7 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   assert.deepEqual(errors, []);
   const result = { passed: true, channel: conversation.channel, messages: history.length, speechSegments: history[0].speech_job_ids.length,
     phases: [...chatPhases], animationPlayback: receipt.status, closeHidesWindow: true, rendererErrors: errors.length,
+    nativeBubbleSegments: segments.length,
     configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true };
   writeFileSync(join(data, 'chat-smoke.json'), JSON.stringify(result, null, 2));
   console.log('[caicai-chat-check] ' + JSON.stringify(result));
