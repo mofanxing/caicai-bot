@@ -23,7 +23,7 @@ async function fixture(t, overrides = {}) {
   const listener = createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const origin = `http://127.0.0.1:${listener.address().port}`;
   await new Promise(resolveClose => listener.close(resolveClose));
-  const env = { ...process.env, APP_ENV: 'test', ADMIN_TOKEN: 'isolated-desktop-manager-test-token-32-chars',
+  const env = { ...process.env, APP_ENV: 'test', ADMIN_TOKEN: '123456',
     MOCK_LLM_ENABLED: 'false', DATABASE_URL: `sqlite:///${join(root, 'test.db')}`,
     SPEECH_DATA_DIR: join(root, 'speech'), PROVIDER_ENCRYPTION_KEY: '',
     PROVIDER_ENCRYPTION_KEY_FILE: join(root, 'provider.key'),
@@ -96,12 +96,12 @@ test('缺少 Python 可解释报错；修复后显式重试，重复启动只创
 
 test('配置错误只返回白名单诊断，不泄露令牌；修复后可重试', async t => {
   const { manager } = await fixture(t);
-  manager.env = { ...manager.env, ADMIN_TOKEN: 'private-short-token' };
+  manager.env = { ...manager.env, ADMIN_TOKEN: '12345' };
   const state = await manager.start();
   assert.equal(state.state, 'failed'); assert.equal(state.error.code, 'config_invalid');
-  assert.doesNotMatch(JSON.stringify(state), /private-short-token|Traceback|input_value/);
+  assert.doesNotMatch(JSON.stringify(state), /12345|Traceback|input_value/);
   assert.equal(manager.child, null);
-  manager.env.ADMIN_TOKEN = 'fixed-isolated-admin-token-at-least-32-chars';
+  manager.env.ADMIN_TOKEN = '123456';
   assert.equal((await manager.start()).state, 'ready');
 });
 

@@ -43,7 +43,7 @@ AI 助手后端。目前完成模型配置、本地文字聊天及本地音色�
     cp .env.example .env
     python -c 'import secrets; print(secrets.token_urlsafe(32))'
 
-将生成的令牌填写到 .env 的 ADMIN_TOKEN，再启动：
+将生成的令牌填写到 .env 的 ADMIN_TOKEN。本机使用时也可以省略生成步骤，设置 `APP_ENV=development` 和 `ADMIN_TOKEN=123456`（本地至少 6 位）；`APP_ENV=production` 仍要求至少 32 位。简单令牌仅用于本机访问，继续绑定 `127.0.0.1`。然后启动：
 
     uvicorn app.main:create_app --factory --reload --host 127.0.0.1 --port 8000
 

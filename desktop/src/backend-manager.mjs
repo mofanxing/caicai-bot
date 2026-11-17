@@ -12,7 +12,7 @@ const messages = {
   python_missing: '未找到可执行的 Python 环境。请按 README 安装 backend/.venv，或设置 CAICAI_BACKEND_PYTHON。',
   launcher_missing: '未找到后端启动文件。请检查项目是否完整，并重新构建桌面端。',
   dependencies_missing: '后端 Python 依赖缺失。请在 backend 虚拟环境中安装 README 要求的依赖后重试。',
-  config_invalid: '后端配置无效。请检查 backend/.env 中的 ADMIN_TOKEN（至少 32 字符）及其他配置后重试。',
+  config_invalid: '后端配置无效。请检查 backend/.env 中的 ADMIN_TOKEN（本地至少 6 字符，生产环境至少 32 字符）及其他配置后重试。',
   startup_failed: '后端启动失败。请检查后端配置、数据目录权限及数据库是否可用后重试。',
   startup_timeout: '等待后端启动超时。请检查 Python 环境和后端配置后重试。',
   backend_exited: '后端进程已异常退出。修复问题后点击“重试连接 / 启动”；不会自动重发聊天。',
