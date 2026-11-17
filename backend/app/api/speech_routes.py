@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.api.routes import find_local_conversation, get_db, require_admin
 from app.core.errors import ServiceError
 from app.models import Message, SpeechJob, Voice
-from app.schemas import SpeechJobRead, SpeechPreview, VoiceRead
+from app.schemas import SpeechFeedbackRead, SpeechJobRead, SpeechPreview, VoiceRead
 from app.services.speech import ACTIVE
 
 speech_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
@@ -88,6 +88,33 @@ def speech_job(job_id: str, db=Depends(get_db)):
     return find_job(db, job_id)
 
 
+@speech_router.get(
+    "/conversations/{conversation_id}/speech-feedback",
+    response_model=SpeechFeedbackRead,
+)
+def feedback_status(conversation_id: str, request: Request, db=Depends(get_db)):
+    service = request.app.state.speech_service
+    with service.guard:
+        conversation = find_local_conversation(db, conversation_id)
+        voice = find_voice(db, conversation.voice_id)
+        return service.feedback_jobs(db, conversation, voice)
+
+
+@speech_router.post(
+    "/conversations/{conversation_id}/speech-feedback",
+    response_model=SpeechFeedbackRead,
+    status_code=202,
+)
+def generate_feedback(conversation_id: str, request: Request, db=Depends(get_db)):
+    service = request.app.state.speech_service
+    with request.app.state.chat_service.conversation_guard(conversation_id), service.guard:
+        conversation = find_local_conversation(db, conversation_id)
+        if conversation.reply_mode == "text":
+            raise ServiceError("voice_disabled", "请先为该会话选择语音回复及音色", 409)
+        voice = find_voice(db, conversation.voice_id)
+        return service.generate_feedback(db, conversation, voice)
+
+
 @speech_router.post("/speech/jobs/{job_id}/retry", response_model=SpeechJobRead, status_code=202)
 def retry_speech_job(job_id: str, request: Request, db=Depends(get_db)):
     service = request.app.state.speech_service
@@ -113,7 +140,7 @@ def retry_speech_job(job_id: str, request: Request, db=Depends(get_db)):
 def recent_previews(db=Depends(get_db)):
     return db.scalars(
         select(SpeechJob)
-        .where(SpeechJob.message_id.is_(None))
+        .where(SpeechJob.message_id.is_(None), SpeechJob.purpose != "feedback")
         .order_by(SpeechJob.created_at.desc(), SpeechJob.id.desc())
         .limit(20)
     ).all()

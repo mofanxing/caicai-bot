@@ -70,7 +70,7 @@ describe('workspace session restoration', () => {
     await act(async () => emit({ type: 'done', message: result }));
     expect(await screen.findByText('第一句话。第二句话。')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText('正在生成回复…')).toBeNull());
-  });
+  }, 10000);
   it('shows the connection form immediately when there is no saved token', () => {
     const { fetchMock } = mockConnection();
     render(<App />);

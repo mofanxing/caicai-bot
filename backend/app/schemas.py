@@ -81,7 +81,20 @@ class ConversationSettings(BaseModel):
     reply_mode: Literal["text", "voice", "both"] = "text"
     voice_id: str | None = Field(default=None, max_length=200)
     voice_prompt: str = Field(default="", max_length=500)
+    feedback_enabled: bool = True
+    feedback_thinking_text: str = Field(default="收到，我想一想。", min_length=1, max_length=100)
+    feedback_waiting_text: str = Field(
+        default="我在准备语音，稍等一下。", min_length=1, max_length=100
+    )
+
     system_prompt: str = Field(default="你是菜菜，一个友善自然的聊天助手。", max_length=16000)
+
+    @field_validator("feedback_thinking_text", "feedback_waiting_text")
+    @classmethod
+    def nonempty_feedback(cls, value):
+        if not value.strip():
+            raise ValueError("请填写提示语文字")
+        return value.strip()
 
     @model_validator(mode="after")
     def check_provider_model_pair(self):
@@ -98,6 +111,8 @@ class ConversationRead(ConversationSettings):
     channel: str
     account_id: str
     peer_id: str
+    feedback_thinking_job_id: str | None = None
+    feedback_waiting_job_id: str | None = None
 
 
 class IncomingMessage(BaseModel):
@@ -156,3 +171,10 @@ class SpeechJobRead(BaseModel):
     duration_seconds: float | None
     generation_seconds: float | None
     created_at: datetime
+
+
+class SpeechFeedbackRead(BaseModel):
+    voice_id: str
+    style_prompt: str
+    thinking: SpeechJobRead | None
+    waiting: SpeechJobRead | None

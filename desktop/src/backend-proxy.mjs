@@ -13,6 +13,7 @@ export function allowedBackendPath(path, method) {
     ['GET|DELETE', `^/api/v1/conversations/${id}/messages$`],
     ['DELETE', `^/api/v1/conversations/${id}/messages/${id}$`],
     ['POST', `^/api/v1/conversations/${id}/messages/${id}/speech$`],
+    ['GET|POST', `^/api/v1/conversations/${id}/speech-feedback$`],
     ['POST', `^/api/v1/desktop/conversations/${id}/messages(?:/stream)?$`],
     ['GET', `^/api/v1/voices/${id}/reference$`],
     ['POST', `^/api/v1/voices/${id}/previews$`],
@@ -53,7 +54,7 @@ export function proxyBackend(req, res, backend, path) {
     fail(504, '等待后端超时，请刷新聊天记录查看结果，避免重复发送。');
     upstream.destroy();
   });
-  upstream.on('error', () => fail(502, '无法连接菜菜后端，请启动后端后重新连接。'));
+  upstream.on('error', () => fail(502, '无法连接菜菜后端，请在桌宠设置中重试连接 / 启动后端，然后重新连接聊天。'));
   let size = 0;
   req.on('data', chunk => {
     size += chunk.length;

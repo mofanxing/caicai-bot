@@ -4,7 +4,7 @@ from queue import Empty, Queue
 from secrets import compare_digest
 from threading import Thread
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -42,7 +42,11 @@ admin = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
 
 
 @router.get("/health")
-def health():
+def health(request: Request, response: Response):
+    response.headers["X-Caicai-Service"] = "caicai-bot"
+    instance = getattr(request.app.state, "desktop_run_id", "")
+    if instance:
+        response.headers["X-Caicai-Instance"] = instance
     return {"status": "ok"}
 
 
@@ -217,7 +221,11 @@ def delete_message(conversation_id: str, message_id: str, request: Request, db=D
 def delete_conversation(conversation_id: str, request: Request, db=Depends(get_db)):
     with request.app.state.chat_service.conversation_guard(conversation_id):
         conversation = find_local_conversation(db, conversation_id)
-        request.app.state.speech_service.clear_message_audio(db, conversation_id)
+        speech = request.app.state.speech_service
+        with speech.guard:
+            speech.ensure_feedback_idle(db, conversation)
+            speech.clear_message_audio(db, conversation_id)
+            speech.clear_feedback(db, conversation)
         db.execute(delete(Message).where(Message.conversation_id == conversation_id))
         db.delete(conversation)
         db.commit()

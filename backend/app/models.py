@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -47,6 +47,11 @@ class Conversation(Base):
     reply_mode: Mapped[str] = mapped_column(String(20), default="text")
     voice_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     voice_prompt: Mapped[str] = mapped_column(Text, default="")
+    feedback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    feedback_thinking_text: Mapped[str] = mapped_column(Text, default="收到，我想一想。")
+    feedback_waiting_text: Mapped[str] = mapped_column(Text, default="我在准备语音，稍等一下。")
+    feedback_thinking_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    feedback_waiting_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     system_prompt: Mapped[str] = mapped_column(Text, default="你是菜菜，一个友善自然的聊天助手。")
 
 
@@ -95,6 +100,7 @@ class SpeechJob(Base):
     __tablename__ = "speech_jobs"
 
     id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    purpose: Mapped[str] = mapped_column(String(20), default="speech")
     voice_id: Mapped[str] = mapped_column(ForeignKey("voices.id", ondelete="CASCADE"))
     message_id: Mapped[str | None] = mapped_column(
         ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True

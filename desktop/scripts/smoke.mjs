@@ -4,7 +4,9 @@ import { join, resolve } from 'node:path';
 import { desktopRoot } from './paths.mjs';
 
 // 继承的上游自检即使没有创建动画也会 exit(0)，这里校验实际结果，避免假通过。
-const child = spawn(process.execPath, [join(desktopRoot, 'scripts/start.mjs'), '--smoke'], { stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, [join(desktopRoot, 'scripts/start.mjs'), '--smoke'], {
+  env: { ...process.env, CAICAI_BACKEND_AUTOSTART: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+});
 let output = '';
 for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output += data; process.stdout.write(data); });
 const watchdog = setTimeout(() => { child.kill('SIGTERM'); }, 45000);

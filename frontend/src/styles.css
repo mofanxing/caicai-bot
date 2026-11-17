@@ -230,3 +230,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .chat-reading-options { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .chat-reading-options label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 @media (max-width: 720px) { .chat-toolbar { flex-wrap: wrap; } .chat-reading-options { width: 100%; } }
+
+.feedback-settings { margin: 24px 0; padding-top: 20px; border-top: 1px solid #e3e8df; }
+.feedback-settings h4 { margin: 0 0 18px; font-size: 13px; color: #344d3e; }
+.feedback-settings .ant-input-textarea-show-count { margin-bottom: 8px; }
+.feedback-settings [role="status"] { margin-top: 12px; overflow-wrap: anywhere; }

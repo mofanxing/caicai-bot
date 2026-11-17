@@ -595,3 +595,351 @@ def test_sentence_chunks_handle_custom_limits_without_losing_content(limit):
 def test_sentence_chunks_reject_an_invalid_limit():
     with pytest.raises(ValueError, match="positive"):
         segments("你好", 0)
+
+
+def feedback(client, cid):
+    response = client.post(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS)
+    assert response.status_code == 202, response.text
+    return response.json()
+
+
+def complete_feedback(client, clips):
+    for phase in ("thinking", "waiting"):
+        assert wait_job(client, clips[phase]["id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize("prompt", ["", "俏皮一点，语速稍快"])
+def test_feedback_uses_saved_voice_prompt_and_persisted_manual_audio(client, engine, prompt):
+    _, calls, _ = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both", prompt, channel="desktop")
+    clips = feedback(client, cid)
+    complete_feedback(client, clips)
+    assert clips["voice_id"] == voice["id"]
+    assert clips["style_prompt"] == (prompt or voice["style_prompt"])
+    assert {text for text, _ in calls} == {"收到，我想一想。", "我在准备语音，稍等一下。"}
+    assert all(style == clips["style_prompt"] for _, style in calls)
+    cached = client.get(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS).json()
+    assert all(cached[p]["id"] == clips[p]["id"] for p in ("thinking", "waiting"))
+    assert len(calls) == 2
+    assert client.get("/api/v1/speech/jobs", headers=HEADERS).json() == []
+    for phase in ("thinking", "waiting"):
+        job = cached[phase]
+        assert job["voice_id"] == voice["id"]
+        assert job["message_id"] is None
+        assert client.get(f"/api/v1/speech/jobs/{job['id']}/audio").status_code == 401
+        assert (
+            client.get(f"/api/v1/speech/jobs/{job['id']}/audio", headers=HEADERS).status_code == 200
+        )
+    with client.app.state.session_factory() as db:
+        assert all(
+            db.get(SpeechJob, clips[p]["id"]).purpose == "feedback" for p in ("thinking", "waiting")
+        )
+
+
+def test_feedback_refreshes_after_prompt_or_voice_changes(client, engine):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    original = feedback(client, cid)
+    complete_feedback(client, original)
+    response = client.put(
+        f"/api/v1/conversations/{cid}/settings",
+        headers=HEADERS,
+        json={"voice_prompt": "活泼", "voice_id": voice["id"], "reply_mode": "both"},
+    )
+    assert response.status_code == 200
+    changed = feedback(client, cid)
+    complete_feedback(client, changed)
+    assert changed["style_prompt"] == "活泼"
+    assert changed["thinking"]["id"] != original["thinking"]["id"]
+    second = add_voice(client, name="第二个音色")
+    response = client.put(
+        f"/api/v1/conversations/{cid}/settings",
+        headers=HEADERS,
+        json={"voice_id": second["id"], "voice_prompt": "活泼", "reply_mode": "both"},
+    )
+    assert response.status_code == 200
+    replaced = feedback(client, cid)
+    complete_feedback(client, replaced)
+    assert replaced["voice_id"] == second["id"]
+    assert replaced["waiting"]["id"] != changed["waiting"]["id"]
+
+
+def test_feedback_get_never_generates_and_missing_file_requires_manual_regeneration(
+    client, engine, monkeypatch
+):
+    local, calls, _ = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    url = f"/api/v1/conversations/{cid}/speech-feedback"
+    initial = client.get(url, headers=HEADERS).json()
+    assert initial["thinking"] is None and initial["waiting"] is None
+    assert not calls
+    clips = feedback(client, cid)
+    complete_feedback(client, clips)
+    status = local.status
+    monkeypatch.setattr(local, "status", lambda: {"available": False, "detail": "未加载"})
+    assert client.get(url, headers=HEADERS).json()["thinking"]["status"] == "completed"
+    service = client.app.state.speech_service
+    service.audio_path(clips["thinking"]["id"]).unlink()
+    assert client.get(url, headers=HEADERS).json()["thinking"] is None
+    assert len(calls) == 2
+    assert client.post(url, headers=HEADERS).status_code == 503
+    assert service.audio_path(clips["waiting"]["id"]).is_file()
+    monkeypatch.setattr(local, "status", status)
+    replaced = feedback(client, cid)
+    complete_feedback(client, replaced)
+    assert replaced["thinking"]["id"] != clips["thinking"]["id"]
+    assert len(calls) == 4
+    for phase in ("thinking", "waiting"):
+        assert not service.audio_path(clips[phase]["id"]).exists()
+        assert (
+            client.get(f"/api/v1/speech/jobs/{clips[phase]['id']}", headers=HEADERS).status_code
+            == 404
+        )
+
+
+def test_failed_manual_generation_does_not_restore_deleted_previous_audio(
+    client, engine, monkeypatch
+):
+    local, calls, _ = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    original = feedback(client, cid)
+    complete_feedback(client, original)
+
+    def fail(*args):
+        raise ServiceError("test", "test failure", 503)
+
+    monkeypatch.setattr(local, "synthesize", fail)
+    clips = feedback(client, cid)
+    assert all(
+        wait_job(client, clips[p]["id"])["status"] == "failed" for p in ("thinking", "waiting")
+    )
+    read = client.get(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS).json()
+    assert read["thinking"]["status"] == "failed"
+    assert len(calls) == 2
+    for phase in ("thinking", "waiting"):
+        assert not client.app.state.speech_service.audio_path(original[phase]["id"]).exists()
+        assert (
+            client.get(f"/api/v1/speech/jobs/{original[phase]['id']}", headers=HEADERS).status_code
+            == 404
+        )
+
+
+def test_feedback_auth_and_channel_isolation(client, engine):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "text")
+    url = f"/api/v1/conversations/{cid}/speech-feedback"
+    assert client.post(url).status_code == 401
+    assert client.post(url, headers=HEADERS).status_code == 409
+    assert (
+        client.post("/api/v1/conversations/missing/speech-feedback", headers=HEADERS).status_code
+        == 404
+    )
+    with client.app.state.session_factory() as db:
+        current = db.get(Conversation, cid)
+        current.channel = "wechat-personal"
+        current.reply_mode = "both"
+        db.commit()
+    response = client.post(url, headers=HEADERS)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "wrong_channel"
+
+
+def test_normal_jobs_jump_ahead_of_queued_feedback(client, engine, monkeypatch):
+    local, calls, synthesize = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    started, release = threading.Event(), threading.Event()
+
+    def controlled(text, *args):
+        if text == "收到，我想一想。":
+            started.set()
+            assert release.wait(5)
+        return synthesize(text, *args)
+
+    monkeypatch.setattr(local, "synthesize", controlled)
+    clips = feedback(client, cid)
+    try:
+        assert started.wait(3)
+        preview = client.post(
+            f"/api/v1/voices/{voice['id']}/previews",
+            headers=HEADERS,
+            json={"text": "正式回复优先。"},
+        )
+        assert preview.status_code == 202
+    finally:
+        release.set()
+    complete_feedback(client, clips)
+    assert wait_job(client, preview.json()["id"])["status"] == "completed"
+    assert [text for text, _ in calls] == [
+        "收到，我想一想。",
+        "正式回复优先。",
+        "我在准备语音，稍等一下。",
+    ]
+
+
+def test_feedback_rejects_duplicate_generation_while_running(client, engine, monkeypatch):
+    local, calls, synthesize = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    started, release = threading.Event(), threading.Event()
+
+    def controlled(*args):
+        started.set()
+        assert release.wait(5)
+        return synthesize(*args)
+
+    monkeypatch.setattr(local, "synthesize", controlled)
+    clips = feedback(client, cid)
+    try:
+        assert started.wait(3)
+        response = client.post(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS)
+        assert response.status_code == 409
+        current = client.get(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS).json()
+        assert current["thinking"]["id"] == clips["thinking"]["id"]
+    finally:
+        release.set()
+    complete_feedback(client, clips)
+    assert len(calls) == 2
+
+
+def test_feedback_jobs_cleaned_with_voice(client, engine):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    clips = feedback(client, cid)
+    complete_feedback(client, clips)
+    assert client.delete(f"/api/v1/voices/{voice['id']}", headers=HEADERS).status_code == 200
+    for phase in ("thinking", "waiting"):
+        job_id = clips[phase]["id"]
+        assert client.get(f"/api/v1/speech/jobs/{job_id}", headers=HEADERS).status_code == 404
+        assert not client.app.state.speech_service.audio_path(job_id).exists()
+
+
+def test_feedback_purpose_migration_preserves_existing_jobs(tmp_path):
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+    from app.migrations import initialize_database
+    from app.models import Voice
+
+    database = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    Base.metadata.create_all(database)
+    with Session(database) as db:
+        voice = Voice(name="旧音色", duration_seconds=3.2)
+        db.add(voice)
+        db.flush()
+        job = SpeechJob(voice_id=voice.id, text="旧任务", style_prompt="旧语气", status="completed")
+        db.add(job)
+        legacy = Conversation(channel="desktop", account_id="desktop", peer_id="旧会话")
+        db.add(legacy)
+        db.commit()
+        job_id, conversation_id = job.id, legacy.id
+    with database.begin() as connection:
+        connection.execute(text("ALTER TABLE speech_jobs DROP COLUMN purpose"))
+        for column in (
+            "feedback_enabled",
+            "feedback_thinking_text",
+            "feedback_waiting_text",
+            "feedback_thinking_job_id",
+            "feedback_waiting_job_id",
+        ):
+            connection.execute(text(f"ALTER TABLE conversations DROP COLUMN {column}"))
+    initialize_database(database)
+    initialize_database(database)
+    with Session(database) as db:
+        job = db.get(SpeechJob, job_id)
+        assert job.purpose == "speech"
+        assert (job.text, job.style_prompt, job.status) == ("旧任务", "旧语气", "completed")
+        legacy = db.get(Conversation, conversation_id)
+        assert legacy.peer_id == "旧会话"
+        assert legacy.feedback_enabled is True
+        assert legacy.feedback_thinking_text == "收到，我想一想。"
+        assert legacy.feedback_waiting_job_id is None
+    database.dispose()
+
+
+@pytest.mark.parametrize("thinking,waiting", [("   ", "稍等"), ("思考", ""), ("啊" * 101, "等待")])
+def test_feedback_settings_validate_nonempty_short_text(client, thinking, waiting):
+    cid = conversation(client)
+    response = client.put(
+        f"/api/v1/conversations/{cid}/settings",
+        headers=HEADERS,
+        json={"feedback_thinking_text": thinking, "feedback_waiting_text": waiting},
+    )
+    assert response.status_code == 422
+
+
+def test_custom_feedback_is_per_conversation_and_each_generation_removes_old_pair(client, engine):
+    _, calls, _ = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    url = f"/api/v1/conversations/{cid}/settings"
+    settings = {
+        "voice_id": voice["id"],
+        "reply_mode": "both",
+        "feedback_enabled": False,
+        "feedback_thinking_text": "  让我琢磨一下。  ",
+        "feedback_waiting_text": "正在为你准备声音。",
+    }
+    saved = client.put(url, headers=HEADERS, json=settings)
+    assert saved.status_code == 200
+    assert saved.json()["feedback_thinking_text"] == "让我琢磨一下。"
+    assert saved.json()["feedback_enabled"] is False
+    assert not calls
+    first = feedback(client, cid)
+    complete_feedback(client, first)
+    assert [text for text, _ in calls] == ["让我琢磨一下。", "正在为你准备声音。"]
+    other = client.post(
+        "/api/v1/conversations", headers=HEADERS, json={"peer_id": "独立提示语"}
+    ).json()["id"]
+    assert (
+        client.put(
+            f"/api/v1/conversations/{other}/settings", headers=HEADERS, json=settings
+        ).status_code
+        == 200
+    )
+    separate = feedback(client, other)
+    complete_feedback(client, separate)
+    assert separate["thinking"]["id"] != first["thinking"]["id"]
+    second = feedback(client, cid)
+    complete_feedback(client, second)
+    for phase in ("thinking", "waiting"):
+        assert second[phase]["id"] != first[phase]["id"]
+        old_id = first[phase]["id"]
+        assert client.get(f"/api/v1/speech/jobs/{old_id}", headers=HEADERS).status_code == 404
+        assert not client.app.state.speech_service.audio_path(old_id).exists()
+        assert (
+            client.get(f"/api/v1/speech/jobs/{separate[phase]['id']}", headers=HEADERS).status_code
+            == 200
+        )
+    assert client.delete(f"/api/v1/conversations/{cid}", headers=HEADERS).status_code == 200
+    for phase in ("thinking", "waiting"):
+        assert not client.app.state.speech_service.audio_path(second[phase]["id"]).exists()
+
+
+def test_saved_text_changes_invalidate_audio_without_automatic_generation(client, engine):
+    _, calls, _ = engine
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    clips = feedback(client, cid)
+    complete_feedback(client, clips)
+    response = client.put(
+        f"/api/v1/conversations/{cid}/settings",
+        headers=HEADERS,
+        json={
+            "voice_id": voice["id"],
+            "reply_mode": "both",
+            "feedback_thinking_text": "新的思考短句。",
+        },
+    )
+    assert response.status_code == 200
+    read = client.get(f"/api/v1/conversations/{cid}/speech-feedback", headers=HEADERS).json()
+    assert read["thinking"] is None
+    assert len(calls) == 2
+    replaced = feedback(client, cid)
+    complete_feedback(client, replaced)
+    for phase in ("thinking", "waiting"):
+        assert not client.app.state.speech_service.audio_path(clips[phase]["id"]).exists()

@@ -38,3 +38,19 @@ it('文字生成和真实出声状态分别保存，并按顺序提交完整快�
     { thinking: false, speaking: false, waiting: false },
   ]);
 });
+
+it('等待提示的实际出声联动动画，但不会反过来把提示当作正式回答', async () => {
+  history.replaceState(null, '', '/chat/#token=pet-capability'); vi.resetModules();
+  const fetchMock = vi.fn().mockResolvedValue(new Response('{}')); vi.stubGlobal('fetch', fetchMock);
+  const { reportDesktopState, reportAudioPlayback, subscribeDesktopState } = await import('./desktop');
+  const listener = vi.fn(); const unsubscribe = subscribeDesktopState(listener);
+  reportDesktopState({ thinking: true }); listener.mockClear();
+  const cue = {}; reportAudioPlayback(cue, true, 'feedback'); reportAudioPlayback(cue, false, 'feedback');
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  expect(listener).not.toHaveBeenCalled();
+  expect(fetchMock.mock.calls.map(call => JSON.parse(call[1].body))).toEqual([
+    { thinking: true, speaking: false, waiting: false },
+    { thinking: true, speaking: true, waiting: false },
+    { thinking: true, speaking: false, waiting: false },
+  ]); unsubscribe();
+});

@@ -11,9 +11,10 @@ import {
   SettingOutlined, SlidersOutlined, WechatOutlined,
 } from '@ant-design/icons';
 import { createApi, type Api } from './api';
-import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile } from './types';
+import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile, SpeechFeedback } from './types';
 import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
 import { chatChannel, desktopHeaders, isDesktop, reportDesktopState } from './desktop';
+import { createWaitingFeedback, type WaitingFeedback, type FeedbackStatus } from './feedback';
 
 type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
@@ -45,10 +46,12 @@ function ConnectionForm({ initialToken, connecting, onConnect }: {
   </Form>;
 }
 
-function ModelSettings({ api, conversation, providers, voices, capabilities, onSaved, disabled }: {
+export function ModelSettings({ api, conversation, providers, voices, capabilities, onSaved, onFeedbackGeneration, feedbackPlaybackStatus, disabled }: {
   api: Api; conversation: Conversation; providers: Provider[]; capabilities: Capabilities;
   voices: VoiceProfile[];
-  onSaved: (value: Conversation) => void; disabled: boolean;
+  onSaved: (value: Conversation) => void;
+  onFeedbackGeneration?: (id: string, generating: boolean) => void;
+  feedbackPlaybackStatus?: FeedbackStatus; disabled: boolean;
 }) {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
@@ -57,6 +60,11 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
   const [saving, setSaving] = useState(false);
   const [modelError, setModelError] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [feedback, setFeedback] = useState<SpeechFeedback | null>(null);
+  const [feedbackError, setFeedbackError] = useState('');
+  const feedbackEnabled = Form.useWatch('feedback_enabled', form);
+  const selectedVoice = Form.useWatch('voice_id', form);
+  const feedbackBusy = [feedback?.thinking, feedback?.waiting].some(job => job?.status === 'queued' || job?.status === 'running');
   const selectedProvider = Form.useWatch('provider_id', form);
   const replyMode = Form.useWatch('reply_mode', form);
   const modelRequest = useRef(0);
@@ -65,7 +73,9 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
     form.setFieldsValue({ provider_id: conversation.provider_id || '',
       model_id: conversation.model_id || '', system_prompt: conversation.system_prompt,
       reply_mode: conversation.reply_mode, voice_id: conversation.voice_id || undefined,
-      voice_prompt: conversation.voice_prompt || '' });
+      voice_prompt: conversation.voice_prompt || '', feedback_enabled: conversation.feedback_enabled ?? true,
+      feedback_thinking_text: conversation.feedback_thinking_text ?? '收到，我想一想。',
+      feedback_waiting_text: conversation.feedback_waiting_text ?? '我在准备语音，稍等一下。' });
     setDirty(false);
   }, [conversation, form]);
 
@@ -74,6 +84,25 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
     setModels([]); setModelError(''); setLoading(false);
     return () => { if (requestId === modelRequest.current) modelRequest.current++; };
   }, [selectedProvider]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    setFeedback(null); setFeedbackError('');
+    if (!conversation.voice_id) return () => controller.abort();
+    const refresh = async () => {
+      try {
+        const result = await api.feedback(conversation.id, controller.signal);
+        if (controller.signal.aborted) return;
+        setFeedback(result); setFeedbackError('');
+        if ([result.thinking, result.waiting].some(job => job?.status === 'queued' || job?.status === 'running')) {
+          timer = setTimeout(refresh, 750);
+        }
+      } catch (error) { if (!controller.signal.aborted) setFeedbackError(errorText(error)); }
+    };
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [api, conversation]);
 
   async function fetchModels() {
     if (!selectedProvider) return;
@@ -92,18 +121,30 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
   }
 
   async function save(values: { provider_id: string; model_id: string; system_prompt: string;
-    reply_mode: 'text' | 'voice' | 'both'; voice_id?: string; voice_prompt?: string }) {
+    reply_mode: 'text' | 'voice' | 'both'; voice_id?: string; voice_prompt?: string;
+    feedback_enabled?: boolean; feedback_thinking_text?: string; feedback_waiting_text?: string }, generate = false) {
     setSaving(true);
+    if (generate) onFeedbackGeneration?.(conversation.id, true);
     try {
       const updated = await api.settings(conversation.id, {
         provider_id: values.provider_id || null,
         model_id: values.provider_id ? values.model_id.trim() : null,
         system_prompt: values.system_prompt, reply_mode: values.reply_mode,
         voice_id: values.voice_id || null, voice_prompt: values.voice_prompt || '',
+        feedback_enabled: values.feedback_enabled ?? true,
+        feedback_thinking_text: values.feedback_thinking_text,
+        feedback_waiting_text: values.feedback_waiting_text,
       });
-      onSaved(updated); setDirty(false); message.success('聊天设置已保存');
+      onSaved(updated); setDirty(false);
+      if (generate) {
+        const result = await api.generateFeedback(conversation.id);
+        setFeedback(result); setFeedbackError('');
+        onSaved({ ...updated, feedback_thinking_job_id: result.thinking?.id ?? null,
+          feedback_waiting_job_id: result.waiting?.id ?? null });
+        message.success('已删除上一版提示语音，开始生成新语音');
+      } else message.success('聊天设置已保存');
     } catch (error) { message.error(errorText(error)); }
-    finally { setSaving(false); }
+    finally { setSaving(false); if (generate) onFeedbackGeneration?.(conversation.id, false); }
   }
 
   return <Card className="settings-card" title={<><SlidersOutlined /> 聊天设置</>}>
@@ -140,6 +181,33 @@ function ModelSettings({ api, conversation, providers, voices, capabilities, onS
       </Form.Item>
       <Form.Item name="voice_prompt" label="语音表达提示词"><Input.TextArea rows={2} maxLength={500}
         disabled={disabled || saving} placeholder="留空跟随音色默认语气，例如：温柔自然，语速稍慢" /></Form.Item>
+      <div className="feedback-settings">
+        <h4>思考与等待语音</h4>
+        <Form.Item name="feedback_enabled" label="等待时语音回应" valuePropName="checked">
+          <Switch aria-label="等待时语音回应" disabled={disabled || saving} />
+        </Form.Item>
+        <Form.Item name="feedback_thinking_text" label="思考提示语" rules={[{ required: true, whitespace: true, message: '请填写思考提示语' }]}>
+          <Input.TextArea rows={2} maxLength={100} showCount disabled={disabled || saving} />
+        </Form.Item>
+        <Form.Item name="feedback_waiting_text" label="语音合成等待提示语" rules={[{ required: true, whitespace: true, message: '请填写等待提示语' }]}>
+          <Input.TextArea rows={2} maxLength={100} showCount disabled={disabled || saving} />
+        </Form.Item>
+        <p className="muted compact">使用当前朗读音色和语音表达提示词。保存设置不会合成；点击下方按钮会先保存，再删除上一版的两条语音并重新生成。</p>
+        <Button data-feedback-generate="true" block loading={saving || feedbackBusy} disabled={disabled || !selectedVoice || replyMode === 'text' || feedbackBusy}
+          onClick={() => { void form.validateFields().then(values => save(values, true)).catch(() => {}); }}>
+          保存并生成提示语音
+        </Button>
+        <p className="muted compact" role="status" data-feedback-status={feedbackBusy ? 'preparing'
+          : feedback?.thinking?.status === 'completed' && feedback?.waiting?.status === 'completed' ? 'ready' : 'missing'}>
+          {feedbackError || (feedbackBusy ? '正在按当前配置生成提示语音…'
+            : feedback?.thinking?.status === 'failed' || feedback?.waiting?.status === 'failed'
+              ? '提示语音生成失败，请重新生成。'
+              : feedback?.thinking && feedback?.waiting ? '当前配置的提示语音已生成。'
+                : '当前配置尚未生成提示语音，请手动生成。')}
+          {!feedbackEnabled && ' 等待时语音回应已关闭。'}
+          {feedbackPlaybackStatus === 'failed' && ' 语音加载失败，请刷新或重新生成。'}
+        </p>
+      </div>
       <p className="muted compact">文字边生成边显示，语音合并短句后分段合成。打开顶部「自动朗读」，默认缓冲后连读，也可切换低延迟。最多朗读前 600 字，首次加载模型较慢。</p>
       {dirty && <p className="unsaved">有未保存的修改，保存后新消息才会使用。</p>}
       <Button htmlType="submit" type="primary" block loading={saving} disabled={disabled}>保存聊天设置</Button>
@@ -301,6 +369,9 @@ export default function App() {
   const [pendingText, setPendingText] = useState('');
   const [autoRead, setAutoRead] = useState(() => localStorage.getItem('caicai.auto-read') !== 'false');
   const [autoReadMessage, setAutoReadMessage] = useState('');
+  const [feedbackGenerating, setFeedbackGenerating] = useState<string | null>(null);
+  const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus>('idle');
+  const waitingFeedback = useRef<WaitingFeedback>();
   const [playbackMode, setPlaybackMode] = useState<'smooth' | 'realtime'>(() =>
     localStorage.getItem('caicai.playback-mode') === 'realtime' ? 'realtime' : 'smooth');
   const streamController = useRef<AbortController | null>(null);
@@ -394,6 +465,23 @@ export default function App() {
   }, [connected, page]);
 
   useEffect(() => () => streamController.current?.abort(), []);
+  useEffect(() => {
+    const feedback = createWaitingFeedback(setFeedbackStatus); waitingFeedback.current = feedback;
+    return () => { feedback?.dispose(); waitingFeedback.current = undefined; };
+  }, []);
+  const feedbackVoice = voices.find(voice => voice.id === active?.voice_id);
+  const feedbackPrompt = active?.voice_prompt || feedbackVoice?.style_prompt || '';
+  useEffect(() => {
+    waitingFeedback.current?.configure(connected && page === 'chat' && active?.feedback_enabled !== false && autoRead && feedbackGenerating !== activeId
+      && !!active && !!feedbackVoice && active.reply_mode !== 'text', active && feedbackVoice ? {
+        api, conversationId: active.id, voiceId: feedbackVoice.id, stylePrompt: feedbackPrompt,
+        thinkingText: active.feedback_thinking_text ?? '收到，我想一想。',
+        waitingText: active.feedback_waiting_text ?? '我在准备语音，稍等一下。',
+        thinkingJobId: active.feedback_thinking_job_id, waitingJobId: active.feedback_waiting_job_id,
+      } : undefined);
+  }, [api, connected, page, autoRead, activeId, active?.reply_mode, feedbackVoice?.id, feedbackPrompt,
+    active?.feedback_enabled, active?.feedback_thinking_text, active?.feedback_waiting_text,
+    active?.feedback_thinking_job_id, active?.feedback_waiting_job_id, feedbackGenerating]);
   useEffect(() => { reportDesktopState({ thinking: sending }); }, [sending]);
   useEffect(() => {
     stopSpeechPlayback();
@@ -604,7 +692,11 @@ export default function App() {
           disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div>
       <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} {isDesktop ? '当前为桌面聊天，消息不会发送到微信。' : '当前为网页测试，消息不会发送到微信。'}</div>
     </section><aside className="chat-settings">{active && capabilities ? <ModelSettings key={active.id} api={api} conversation={active}
-      providers={providers} voices={voices} capabilities={capabilities} disabled={busy} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
+      providers={providers} voices={voices} capabilities={capabilities} disabled={busy}
+      feedbackPlaybackStatus={feedbackStatus} onFeedbackGeneration={(id, generating) => {
+        if (generating) waitingFeedback.current?.configure(false);
+        setFeedbackGenerating(previous => generating ? id : previous === id ? null : previous);
+      }} onSaved={updated => setConversations(previous => previous.map(c => c.id === updated.id ? updated : c))} />
       : <Card title={<><SlidersOutlined /> 聊天设置</>}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="创建会话后配置模型" /></Card>}
       <div className="next-step-card"><span className="eyebrow">LOCAL VOICE</span><h3>先给菜菜一个声音</h3><p>上传熟悉的参考录音，试听不同语气，再为当前聊天选择音色。</p>
         <button onClick={() => setPage('voices')}>管理本地音色 <ArrowRightOutlined /></button></div>

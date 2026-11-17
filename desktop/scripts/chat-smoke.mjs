@@ -42,7 +42,10 @@ try {
   const results = resolve(process.env.CAICAI_CHAT_CHECK_OUTPUT || join(desktopRoot, '.data'));
   mkdirSync(results, { recursive: true });
   if (code !== 0 || !output.includes('[caicai-chat-check]')) throw new Error(output.slice(-5000));
-  for (const name of ['chat-smoke.json', 'chat-smoke.png']) writeFileSync(join(results, name), readFileSync(join(data, name)));
+  if (backend.exitCode !== null || !(await fetch(origin + '/health', { signal: AbortSignal.timeout(1500) })).ok) {
+    throw new Error('桌面退出不应停止复用的外部后端');
+  }
+  for (const name of ['chat-smoke.json', 'chat-smoke.png', 'feedback-smoke.png']) writeFileSync(join(results, name), readFileSync(join(data, name)));
   console.log(readFileSync(join(results, 'chat-smoke.json'), 'utf8'));
   console.log('桌面聊天验收截图：' + join(results, 'chat-smoke.png'));
 } catch (error) {

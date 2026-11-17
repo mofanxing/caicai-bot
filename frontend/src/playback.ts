@@ -26,7 +26,7 @@ export class SpeechPlayback {
   private loadGeneration = 0;
   private disposed = false;
 
-  constructor(private onEnded: () => void) {}
+  constructor(private onEnded: () => void, private kind: 'reply' | 'feedback' = 'reply') {}
 
   loadBuffer(buffer: AudioBuffer): void {
     this.pause(); this.loadGeneration++; this.buffer = buffer; this.offset = 0;
@@ -52,9 +52,9 @@ export class SpeechPlayback {
     this.source = source; this.started = audio.currentTime;
     source.onended = () => {
       if (this.source !== source) return;
-      this.source = undefined; this.offset = 0; source.disconnect(); playing(source, false); this.onEnded();
+      this.source = undefined; this.offset = 0; source.disconnect(); playing(source, false, this.kind); this.onEnded();
     };
-    try { source.start(0, this.offset); playing(source, true); }
+    try { source.start(0, this.offset); playing(source, true, this.kind); }
     catch (error) { this.source = undefined; source.disconnect(); throw error; }
   }
 
@@ -65,7 +65,7 @@ export class SpeechPlayback {
     if (!source) return;
     this.offset = Math.min(this.buffer?.duration || 0, this.offset + context().currentTime - this.started);
     this.source = undefined; source.onended = null; source.stop(); source.disconnect();
-    playing(source, false);
+    playing(source, false, this.kind);
   }
 
   dispose(): void { this.pause(); this.loadGeneration++; this.disposed = true; this.buffer = undefined; }

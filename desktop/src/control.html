@@ -8,16 +8,33 @@
 <div class="card"><h2>桌宠形象</h2><select id="pets" aria-label="桌宠形象"></select><button id="select">切换形象</button>
 <p>切换会保存选择；关闭这个面板后桌宠仍然常驻。右键桌宠可使用原有动作与显示菜单，从托盘退出程序。</p><small>只有一个形象时，可按 desktop/README.md 安装新的上游格式角色包。</small></div>
 <div class="card"><div class="row"><h2>菜菜工作台</h2><span id="backend" class="badge">检查后端连接…</span></div>
-<p>打开独立聊天窗，连接后端并创建桌面会话，即可使用已有模型和音色。关闭聊天窗会收起，回复和播报继续。</p><div class="row"><button id="chat">和菜菜聊天</button><button id="workbench">打开网页工作台</button></div><p><small id="address"></small></p></div>
+<p>菜菜会连接已有后端，或自动启动本项目的后端。打开聊天窗后填写管理员令牌，即可使用已有模型和音色。关闭聊天窗会收起，回复和播报继续。</p><p id="backend-detail" role="status"></p><div class="row"><button id="chat">和菜菜聊天</button><button id="retry">重试连接 / 启动</button><button id="workbench">打开网页工作台</button></div><p><small id="address"></small></p></div>
 <div id="message" role="status"></div><small>默认“大肥鱼”形象用于个人非商业验证。来源：PC2005-cloud/dsh-pet；形象遵循 CC BY-NC-SA 4.0，详见 THIRD_PARTY_NOTICES.md。</small>
 <script>
 const token=new URLSearchParams(location.hash.slice(1)).get('token')||'';
 history.replaceState(null,'',location.pathname);
 const message=document.getElementById('message');
 async function api(path,body){const response=await fetch(path,{method:body?'POST':'GET',headers:{'X-DSH-Pet-Token':token,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});const result=await response.json();if(!response.ok)throw new Error(typeof result.error==='string'?result.error:'操作失败');return result;}
-async function refresh(){const status=await api('/caicai/status');const select=document.getElementById('pets');select.replaceChildren();for(const pet of status.pets){const option=document.createElement('option');option.value=pet.id;option.textContent=pet.name+' · '+pet.entry;option.selected=pet.display==='desktop'||pet.display==='both';select.append(option);}document.getElementById('backend').textContent=status.backendReady?'后端已连接':'后端未启动';document.getElementById('address').textContent='工作台：'+status.workbench+'；后端：'+status.backend;document.getElementById('select').disabled=!status.pets.length;}
+let refreshing=false;
+async function refresh(){
+  if(refreshing)return;refreshing=true;
+  try{
+    const status=await api('/caicai/status');const select=document.getElementById('pets');
+    const previous=select.value;const signature=JSON.stringify(status.pets);
+    if(select.dataset.signature!==signature){select.replaceChildren();for(const pet of status.pets){const option=document.createElement('option');option.value=pet.id;option.textContent=pet.name+' · '+pet.entry;option.selected=pet.display==='desktop'||pet.display==='both';select.append(option);}if([...select.options].some(option=>option.value===previous))select.value=previous;select.dataset.signature=signature;}
+    const state=status.backendStatus;
+    const labels={connecting:'正在连接后端…',starting:'正在启动后端…',ready:'后端已连接',failed:'后端连接失败',stopping:'正在停止后端…',stopped:'后端已停止'};
+    document.getElementById('backend').textContent=labels[state.state]||'检查后端连接…';
+    document.getElementById('backend').style.color=state.state==='failed'?'#a13030':'#2f654c';
+    document.getElementById('backend-detail').textContent=state.error?.message||(state.state==='ready'?(state.mode==='managed'?'后端由菜菜启动，退出菜菜时自动清理。':'正在复用已有后端，退出菜菜不会关闭该服务。'):'启动与连接期间，桌宠仍可正常使用。');
+    document.getElementById('retry').disabled=['connecting','starting','stopping'].includes(state.state);
+    document.getElementById('address').textContent='工作台：'+status.workbench+'；后端：'+status.backend;document.getElementById('select').disabled=!status.pets.length;
+  }finally{refreshing=false;}
+}
 document.getElementById('select').onclick=async function(){this.disabled=true;message.textContent='';try{await api('/caicai/select',{id:document.getElementById('pets').value});await refresh();message.textContent='形象已切换并保存';}catch(error){message.textContent=error.message;}finally{this.disabled=false;}};
 document.getElementById('workbench').onclick=()=>api('/caicai/workbench',{}).catch(error=>message.textContent=error.message);
 document.getElementById('chat').onclick=()=>api('/caicai/chat',{}).catch(error=>message.textContent=error.message);
+document.getElementById('retry').onclick=async function(){this.disabled=true;message.textContent='';try{await api('/caicai/backend/retry',{});await refresh();}catch(error){message.textContent=error.message;this.disabled=false;}};
 refresh().catch(error=>message.textContent=error.message);
+setInterval(()=>refresh().catch(error=>message.textContent=error.message),1500);
 </script></body></html>

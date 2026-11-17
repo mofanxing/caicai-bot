@@ -29,6 +29,16 @@ class SpeechService:
         self.session_factory = session_factory
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         with session_factory() as db:
+            linked = set()
+            for thinking, waiting in db.execute(
+                select(Conversation.feedback_thinking_job_id, Conversation.feedback_waiting_job_id)
+            ):
+                linked.update(job_id for job_id in (thinking, waiting) if job_id)
+            for job in db.scalars(select(SpeechJob).where(SpeechJob.purpose == "feedback")):
+                if job.id not in linked:
+                    self.audio_path(job.id).unlink(missing_ok=True)
+                    self.audio_path(job.id).with_suffix(".tmp.wav").unlink(missing_ok=True)
+                    db.delete(job)
             db.execute(
                 update(SpeechJob)
                 .where(SpeechJob.status == "running")
@@ -134,6 +144,7 @@ class SpeechService:
                     db.scalars(
                         select(SpeechJob.id).where(
                             SpeechJob.status.in_(ACTIVE),
+                            SpeechJob.purpose != "feedback",
                             or_(SpeechJob.message_id.is_(None), SpeechJob.message_id != message.id)
                             if segment and message
                             else True,
@@ -151,11 +162,94 @@ class SpeechService:
                 self.executor.submit(self._run, job.id)
             return job
 
+    def feedback_jobs(self, db, conversation, voice):
+        """Read only: configuration changes never start synthesis implicitly."""
+        prompt = conversation.voice_prompt or voice.style_prompt
+        jobs = {}
+        for phase in ("thinking", "waiting"):
+            job_id = getattr(conversation, f"feedback_{phase}_job_id")
+            job = db.get(SpeechJob, job_id) if job_id else None
+            if job and (
+                job.purpose != "feedback"
+                or job.voice_id != voice.id
+                or job.style_prompt != prompt
+                or job.text != getattr(conversation, f"feedback_{phase}_text")
+                or (job.status == "completed" and not self.audio_path(job.id).is_file())
+            ):
+                job = None
+            jobs[phase] = job
+        return {"voice_id": voice.id, "style_prompt": prompt, **jobs}
+
+    def ensure_feedback_idle(self, db, conversation):
+        jobs = [
+            db.get(SpeechJob, job_id)
+            for job_id in (
+                conversation.feedback_thinking_job_id,
+                conversation.feedback_waiting_job_id,
+            )
+            if job_id
+        ]
+        jobs = [job for job in jobs if job and job.purpose == "feedback"]
+        if any(job.status in ACTIVE for job in jobs):
+            raise ServiceError("speech_busy", "提示语音仍在生成，请完成后再操作", 409)
+        return jobs
+
+    def clear_feedback(self, db, conversation):
+        jobs = self.ensure_feedback_idle(db, conversation)
+        for job in jobs:
+            self.audio_path(job.id).unlink(missing_ok=True)
+            self.audio_path(job.id).with_suffix(".tmp.wav").unlink(missing_ok=True)
+            db.delete(job)
+        conversation.feedback_thinking_job_id = None
+        conversation.feedback_waiting_job_id = None
+        db.flush()
+
+    def generate_feedback(self, db, conversation, voice):
+        """Replace this conversation's two clips only on an explicit generation request."""
+        with self.guard:
+            status = self.engine.status()
+            if not status["available"]:
+                raise ServiceError("tts_not_ready", status["detail"], 503)
+            active = db.scalars(select(SpeechJob.id).where(SpeechJob.status.in_(ACTIVE))).all()
+            if len(active) + 2 > 8:
+                raise ServiceError("speech_busy", "语音队列已满，请稍后重新生成提示语音", 409)
+            self.clear_feedback(db, conversation)
+            jobs = {}
+            for phase in ("thinking", "waiting"):
+                job = SpeechJob(
+                    id=new_id(),
+                    voice_id=voice.id,
+                    purpose="feedback",
+                    text=getattr(conversation, f"feedback_{phase}_text"),
+                    style_prompt=conversation.voice_prompt or voice.style_prompt,
+                    status="queued",
+                )
+                db.add(job)
+                setattr(conversation, f"feedback_{phase}_job_id", job.id)
+                jobs[phase] = job
+            db.commit()
+            for job in jobs.values():
+                self.executor.submit(self._run, job.id)
+            return {
+                "voice_id": voice.id,
+                "style_prompt": conversation.voice_prompt or voice.style_prompt,
+                **jobs,
+            }
+
     def _run(self, job_id):
         with self.session_factory() as db:
             with self.guard:
                 job = db.get(SpeechJob, job_id)
                 if self.closing or not job or job.status != "queued":
+                    return
+                if job.purpose == "feedback" and db.scalar(
+                    select(SpeechJob.id)
+                    .where(SpeechJob.status == "queued", SpeechJob.purpose != "feedback")
+                    .limit(1)
+                ):
+                    # Normal replies may jump ahead of queued cache warming, never interrupt
+                    # an inference already running inside the shared local engine.
+                    self.executor.submit(self._run, job.id)
                     return
                 job.status = "running"
                 db.commit()

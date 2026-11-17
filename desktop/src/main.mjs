@@ -13,6 +13,8 @@ import { loopbackUrl, makeSelectionChanges } from './policy.mjs';
 import { proxyBackend } from './backend-proxy.mjs';
 import { chatPresentation, validateChatState } from './chat-state.mjs';
 import { checkDesktopChat } from './chat-check.mjs';
+import { BackendManager } from './backend-manager.mjs';
+import { checkBackendLifecycle } from './backend-check.mjs';
 
 const require = createRequire(import.meta.url);
 const { app, BrowserWindow, ipcMain, session, shell, dialog } = require('electron');
@@ -50,6 +52,23 @@ async function boot() {
   let control;
   let chat;
   let quitting = false;
+  let cleanup;
+  let cleanupDone = false;
+  const backendManager = new BackendManager({
+    origin: backend, backendRoot: resolve(root, '../../backend'),
+    python: process.env.CAICAI_BACKEND_PYTHON,
+    autoStart: process.env.CAICAI_BACKEND_AUTOSTART !== '0',
+  });
+  async function shutdown(code) {
+    quitting = true;
+    cleanup ??= backendManager.stop().finally(() => {
+      server.closeAllConnections(); server.close();
+      void context.dispose(); cleanupDone = true;
+    });
+    await cleanup;
+    if (code === undefined) app.quit();
+    else app.exit(code);
+  }
   let chatState = { thinking: false, speaking: false, waiting: false };
   const chatPhases = new Set();
   let presentation = Promise.resolve();
@@ -122,13 +141,18 @@ async function boot() {
     }
     if (url.pathname === '/health' && req.method === 'GET') { json(res, 200, { app: 'caicai-desktop', upstream: '0.4.9' }); return; }
     if (url.pathname === '/caicai/status' && req.method === 'GET') {
-      let backendReady = false;
-      try { backendReady = (await fetch(backend + '/health', { signal: AbortSignal.timeout(1500), redirect: 'error' })).ok; } catch { /* 如实显示未连接，不阻塞桌宠。 */ }
+      const backendStatus = backendManager.status();
+      const backendReady = backendStatus.state === 'ready';
       const merged = readAllConfig(paths);
-      json(res, 200, { backendReady, workbench, backend, data,
+      json(res, 200, { backendReady, backendStatus, workbench, backend, data,
         pets: Object.entries(merged).flatMap(([entry, conf]) => conf.pets.map(p => ({ id: p.id, name: p.name, entry, display: p.display }))),
         chatReady: backendReady, chatState: chatPresentation(chatState).phase,
       }); return;
+    }
+    if (url.pathname === '/caicai/backend/retry' && req.method === 'POST') {
+      if (quitting) { json(res, 409, { error: '菜菜正在退出' }); return; }
+      void backendManager.start();
+      json(res, 202, { ok: true, backendStatus: backendManager.status() }); return;
     }
     if (url.pathname === '/caicai/select' && req.method === 'POST') {
       if (selecting) { json(res, 409, { error: '正在切换角色，请稍后重试' }); return; }
@@ -183,7 +207,10 @@ async function boot() {
   process.env.DSH_PET_SCALE = '1';
   delete process.env.DSH_PET_HOST_PID;
   apply(context.ctx);
-  if (context.failures.length) throw new Error('上游初始化失败：' + context.failures.join('; '));
+  if (context.failures.length) {
+    await backendManager.stop(); server.close(); void context.dispose();
+    throw new Error('上游初始化失败：' + context.failures.join('; '));
+  }
   process.env.DSH_PET_PETS = JSON.stringify(pets().filter(p => ['desktop', 'both'].includes(p.display)).map(p => ({ id: p.id, size: p.size })));
   const renderer = join(root, 'runtime/electron-helper/index.html');
   function showChat(visible = true) {
@@ -202,7 +229,7 @@ async function boot() {
   }
   const showControl = (visible = true) => {
     if (control && !control.isDestroyed()) { control.show(); control.focus(); return; }
-    control = new BrowserWindow({ title: '菜菜 · 桌宠控制面板', show: visible, width: 620, height: 620, minWidth: 480, minHeight: 480,
+    control = new BrowserWindow({ title: '菜菜 · 桌宠控制面板', show: visible, width: 680, height: 800, minWidth: 480, minHeight: 480,
       // 与 file:// 桌宠分开：上游默认 session 会剥除非桌宠页面的能力令牌。
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: 'caicai-control' },
     });
@@ -218,10 +245,13 @@ async function boot() {
   try { require(join(root, 'runtime/electron-helper/main.js')); } finally { delete process.env.DSH_PET_APP_TOKEN; }
   app.on('second-instance', () => showChat());
   app.on('activate', () => showChat());
-  app.on('before-quit', () => { quitting = true; });
-  app.on('will-quit', () => {
-    server.closeAllConnections(); server.close(); void context.dispose();
+  app.on('before-quit', event => {
+    quitting = true;
+    if (!cleanupDone) { event.preventDefault(); void shutdown(); }
   });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void shutdown(0); });
+  // Start asynchronously so a missing Python environment cannot block the pet or settings.
+  void backendManager.start();
   // Electron 在 ESM 主模块求值完成后才发 ready；不能在顶层 await 的 boot 内等待 ready。
   void app.whenReady().then(() => {
     // 上游在 ready 回调注册 IPC，必须等其注册完再替换唯一的工作台入口。
@@ -230,11 +260,14 @@ async function boot() {
       if (event.sender.getURL().split(/[?#]/)[0] === pathToFileURL(renderer).href) showChat();
     });
     console.log(`[caicai-desktop] 已启动 ${origin()}（仅本机；收起窗口后桌宠继续运行）`);
-    if (process.env.CAICAI_CHAT_CHECK === '1') {
+    if (process.env.CAICAI_BACKEND_CHECK) {
+      void checkBackendLifecycle({ showControl, showChat, origin: origin(), token: security.token, data, manager: backendManager })
+        .then(() => app.quit()).catch(error => { logger.error('后端验收失败：' + error.message); void shutdown(1); });
+    } else if (process.env.CAICAI_CHAT_CHECK === '1') {
       void checkDesktopChat({ showChat, origin: origin(), token: security.token, data, chatPhases })
-        .then(() => app.exit(0)).catch(error => { logger.error('聊天验收失败：' + error.message); app.exit(1); });
+        .then(() => shutdown(0)).catch(error => { logger.error('聊天验收失败：' + error.message); void shutdown(1); });
     } else if (process.env.DSH_PET_SMOKE !== '1') showControl();
-    else void runChecks().catch(() => { console.error('[caicai-check] 检查失败'); app.exit(1); });
+    else void runChecks().catch(() => { console.error('[caicai-check] 检查失败'); void shutdown(1); });
   });
   async function runChecks() {
     const check = showControl(false);

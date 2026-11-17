@@ -119,8 +119,8 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
   const complete = !streaming && index >= jobIds.length;
   useEffect(() => {
     reportSpeechWaiting(playerId, playing && buffering && !complete && !error && job?.status !== 'failed');
-    return () => reportSpeechWaiting(playerId, false);
   }, [playerId, playing, buffering, complete, error, job?.status]);
+  useEffect(() => () => reportSpeechWaiting(playerId, false), [playerId]);
   const completedJobs = jobIds.map(id => jobs[id]).filter(item => item?.status === 'completed');
   const totalDuration = completedJobs.reduce((sum, item) => sum + (item.duration_seconds || 0), 0);
   const totalGeneration = completedJobs.reduce((sum, item) => sum + (item.generation_seconds || 0), 0);
@@ -216,7 +216,9 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
   return <div className="speech-player">
     <div className="speech-progress"><Button size="small" icon={<SoundOutlined />} onClick={() => {
       if (!playing || complete) void prepareSpeechPlayback().catch(() => {});
-      if (complete) { setIndex(0); setPlaying(true); } else setPlaying(value => !value);
+      if (complete) { setIndex(0); setPlaying(true); }
+      else if (playing) { stopSpeechPlayback(); setPlaying(false); }
+      else setPlaying(true);
     }}>{complete ? '重新朗读' : playing ? '暂停朗读' : '开始朗读'}</Button>
       <span>{complete ? '朗读完成' : job?.status === 'failed' ? '此段语音生成失败，文字已保留'
         : playing && buffering && playbackMode === 'smooth' ? (slowerThanPlayback

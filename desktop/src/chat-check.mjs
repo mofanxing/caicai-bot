@@ -25,6 +25,41 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   await evaluate(`sessionStorage.setItem('caicai.admin-token', ${JSON.stringify(admin)}); location.reload();`);
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('[aria-label=选择桌面会话]') !== null && document.querySelector('textarea[aria-label=聊天内容]')?.disabled === false");
+  const headers = { 'X-DSH-Pet-Token': token, Authorization: 'Bearer ' + admin };
+  const conversations = await (await fetch(origin + '/api/v1/conversations', { headers })).json();
+  const conversation = conversations.find(item => item.channel === 'desktop');
+  const feedbackUrl = origin + `/api/v1/conversations/${conversation.id}/speech-feedback`;
+  const before = await (await fetch(feedbackUrl, { headers })).json();
+  assert.equal(before.thinking, null); assert.equal(before.waiting, null, '进入聊天不应自动生成提示语音');
+  await evaluate("document.querySelector('[data-feedback-generate]').click()");
+  await wait("document.querySelector('[data-feedback-status=ready]') !== null");
+  const first = await (await fetch(feedbackUrl, { headers })).json();
+  assert.ok(first.thinking?.id && first.waiting?.id);
+  await evaluate("document.querySelector('[data-feedback-generate]').click()");
+  let regenerated;
+  for (let i = 0; i < 100; i++) {
+    regenerated = await (await fetch(feedbackUrl, { headers })).json();
+    if (regenerated.thinking?.id !== first.thinking.id && regenerated.thinking?.status === 'completed'
+      && regenerated.waiting?.status === 'completed') break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.notEqual(regenerated.thinking?.id, first.thinking.id);
+  for (const phase of ['thinking', 'waiting']) {
+    const response = await fetch(origin + '/api/v1/speech/jobs/' + first[phase].id + '/audio', { headers });
+    assert.equal(response.status, 404, '重新生成必须删除上一版文件和任务');
+  }
+  await wait("document.querySelector('[data-feedback-status=ready]') !== null");
+  // Let the authenticated audio downloads and decode finish before starting the turn.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await evaluate(`{
+    window.__caicaiPlaybackDurations = [];
+    const original = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function(...args) {
+      window.__caicaiPlaybackDurations.push(this.buffer?.duration || 0);
+      return original.apply(this, args);
+    };
+    void 0;
+  }`);
   await evaluate(`{ const input = document.querySelector('textarea[aria-label=聊天内容]');
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '桌面验收：你好菜菜');
     input.dispatchEvent(new Event('input', { bubbles: true })); }`);
@@ -33,9 +68,18 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   await wait("document.querySelector('.message-row.assistant .bubble')?.textContent.includes('桌面链路验收') === true");
   window.close(); assert.equal(window.isDestroyed(), false); assert.equal(window.isVisible(), false);
   await wait("document.querySelector('.speech-progress')?.textContent.includes('朗读完成') === true");
-  const headers = { 'X-DSH-Pet-Token': token, Authorization: 'Bearer ' + admin };
-  const conversations = await (await fetch(origin + '/api/v1/conversations', { headers })).json();
-  const conversation = conversations.find(item => item.channel === 'desktop');
+  const playbackDurations = await evaluate('window.__caicaiPlaybackDurations');
+  const feedbackClips = playbackDurations.filter(duration => Math.abs(duration - 0.75) > 0.01);
+  assert.equal(feedbackClips.length, 2, '思考和语音准备各播放一次按配置生成的短句：' + JSON.stringify(playbackDurations));
+  assert.ok(feedbackClips.every(duration => duration > 0.3));
+  const prepared = await (await fetch(feedbackUrl, { headers })).json();
+  assert.equal(prepared.voice_id, conversation.voice_id);
+  assert.equal(prepared.style_prompt, '轻快亲切，像朋友一样回应');
+  for (const phase of ['thinking', 'waiting']) {
+    assert.equal(prepared[phase].voice_id, conversation.voice_id);
+    assert.equal(prepared[phase].style_prompt, prepared.style_prompt);
+    assert.equal(prepared[phase].status, 'completed');
+  }
   const history = await (await fetch(origin + `/api/v1/conversations/${conversation.id}/messages`, { headers })).json();
   assert.equal(history.length, 1); assert.equal(history[0].status, 'completed');
   assert.ok(history[0].speech_job_ids.length > 0);
@@ -53,12 +97,18 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   assert.ok(['playing', 'ended'].includes(receipt.status), '动画必须有实际播放回执：' + receipt.status);
   const picture = await window.webContents.capturePage();
   writeFileSync(join(data, 'chat-smoke.png'), picture.toPNG());
+  window.showInactive();
+  await evaluate("document.querySelector('.feedback-settings').scrollIntoView({ block: 'center', behavior: 'instant' })");
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const settingsPicture = await window.webContents.capturePage();
+  writeFileSync(join(data, 'feedback-smoke.png'), settingsPicture.toPNG());
   window.close(); assert.equal(window.isDestroyed(), false); assert.equal(window.isVisible(), false);
   assert.equal(showChat(false), window);
   assert.equal(await evaluate("document.querySelector('.message-row.assistant .bubble')?.textContent.includes('桌面链路验收')"), true);
   assert.deepEqual(errors, []);
   const result = { passed: true, channel: conversation.channel, messages: history.length, speechSegments: history[0].speech_job_ids.length,
-    phases: [...chatPhases], animationPlayback: receipt.status, closeHidesWindow: true, rendererErrors: errors.length };
+    phases: [...chatPhases], animationPlayback: receipt.status, closeHidesWindow: true, rendererErrors: errors.length,
+    configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true };
   writeFileSync(join(data, 'chat-smoke.json'), JSON.stringify(result, null, 2));
   console.log('[caicai-chat-check] ' + JSON.stringify(result));
 }

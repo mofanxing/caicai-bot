@@ -10,6 +10,8 @@ test('代理仅允许明确的桌面 API 路径和方法', () => {
     assert.equal(allowedBackendPath(path, 'POST'), false);
   }
   assert.equal(allowedBackendPath('/api/v1/providers', 'PATCH'), false);
+  assert.equal(allowedBackendPath('/api/v1/conversations/c1/speech-feedback', 'POST'), true);
+  assert.equal(allowedBackendPath('/api/v1/conversations/c1/speech-feedback', 'GET'), true);
 });
 
 test('真实 HTTP 代理及时转发 SSE、保留二进制，并隔离本机凭据', async t => {
@@ -49,5 +51,5 @@ test('后端离线时返回可理解的错误，不暴露网络细节', async t 
   proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
   t.after(() => { proxy.closeAllConnections(); proxy.close(); });
   const response = await fetch(`http://127.0.0.1:${proxy.address().port}/api/v1/capabilities`);
-  assert.equal(response.status, 502); assert.match((await response.json()).error.message, /请启动后端/);
+  assert.equal(response.status, 502); assert.match((await response.json()).error.message, /重试连接.*启动后端/);
 });

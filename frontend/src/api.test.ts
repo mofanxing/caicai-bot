@@ -134,6 +134,36 @@ describe('backend API client', () => {
     await expect(request('token', '/providers')).rejects.toBeInstanceOf(ApiError);
   });
 
+  it('generates feedback only via an explicit authenticated POST', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetchMock);
+    await createApi('private-token').generateFeedback('conversation/id');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conversation%2Fid/speech-feedback');
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer private-token');
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+    await createApi('private-token').feedback('conversation/id');
+    expect(fetchMock.mock.calls[1][1].method).toBeUndefined();
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/conversations/conversation%2Fid/speech-feedback');
+  });
+
+  it.each([false, true])('cancels feedback HTTP work with its caller signal (already aborted: %s)', async aborted => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    const fetchMock = vi.fn((_path: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+      init.signal!.addEventListener('abort', abort, { once: true });
+      if (init.signal!.aborted) abort();
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const pending = createApi('token').generateFeedback('c1', controller.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ status: 408 });
+    controller.abort(); await rejected;
+    expect(fetchMock.mock.calls[0][1].signal!.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('warns about ambiguous results when a request is aborted', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError')));
     await expect(request('token', '/providers')).rejects.toThrow('请先刷新聊天记录');

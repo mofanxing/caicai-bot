@@ -1,5 +1,5 @@
 import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate,
-  VoiceProfile, SpeechStatus, SpeechJob, ChatStreamEvent } from './types';
+  VoiceProfile, SpeechStatus, SpeechJob, SpeechFeedback, ChatStreamEvent } from './types';
 import { chatChannel, desktopHeaders } from './desktop';
 
 export async function streamChat(token: string, id: string, text: string, externalId: string,
@@ -67,6 +67,9 @@ export async function request<T>(token: string, path: string, init: RequestInit 
   responseType: 'json' | 'blob' = 'json'): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 75000);
+  const abort = () => controller.abort();
+  init.signal?.addEventListener('abort', abort, { once: true });
+  if (init.signal?.aborted) controller.abort();
   try {
     const response = await fetch('/api/v1' + path, {
       ...init,
@@ -97,6 +100,7 @@ export async function request<T>(token: string, path: string, init: RequestInit 
     throw new ApiError('无法连接后端。请确认后端已在 8000 端口启动。', 0);
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -113,10 +117,14 @@ export const createApi = (token: string) => ({
     token, '/voices/' + encodeURIComponent(id) + '/previews', {
       method: 'POST', body: JSON.stringify({ text, style_prompt: stylePrompt }),
     }),
-  speechJob: (id: string) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id)),
-  retrySpeechJob: (id: string) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' }),
+  speechJob: (id: string, signal?: AbortSignal) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id), { signal }),
+  retrySpeechJob: (id: string, signal?: AbortSignal) => request<SpeechJob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST', signal }),
   speechJobs: () => request<SpeechJob[]>(token, '/speech/jobs'),
-  speechAudio: (id: string) => request<Blob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/audio', {}, 'blob'),
+  speechAudio: (id: string, signal?: AbortSignal) => request<Blob>(token, '/speech/jobs/' + encodeURIComponent(id) + '/audio', { signal }, 'blob'),
+  generateFeedback: (conversationId: string, signal?: AbortSignal) => request<SpeechFeedback>(
+    token, '/conversations/' + encodeURIComponent(conversationId) + '/speech-feedback', { method: 'POST', signal }),
+  feedback: (conversationId: string, signal?: AbortSignal) => request<SpeechFeedback>(
+    token, '/conversations/' + encodeURIComponent(conversationId) + '/speech-feedback', { signal }),
   deleteSpeechJob: (id: string) => request<{ deleted: boolean }>(
     token, '/speech/jobs/' + encodeURIComponent(id), { method: 'DELETE' }),
   messageSpeech: (conversationId: string, messageId: string) => request<SpeechJob>(

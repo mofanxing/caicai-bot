@@ -23,11 +23,16 @@ export interface Conversation {
   reply_mode: 'text' | 'voice' | 'both';
   voice_id: string | null;
   voice_prompt: string;
+  feedback_enabled?: boolean;
+  feedback_thinking_text?: string;
+  feedback_waiting_text?: string;
+  feedback_thinking_job_id?: string | null;
+  feedback_waiting_job_id?: string | null;
   system_prompt: string;
 }
 
 export type ConversationSettings = Pick<Conversation,
-  'provider_id' | 'model_id' | 'reply_mode' | 'voice_id' | 'voice_prompt' | 'system_prompt'>;
+  'provider_id' | 'model_id' | 'reply_mode' | 'voice_id' | 'voice_prompt' | 'system_prompt' | 'feedback_enabled' | 'feedback_thinking_text' | 'feedback_waiting_text'>;
 
 export interface ChatMessage {
   id: string;
@@ -61,6 +66,10 @@ export interface SpeechJob {
   id: string; voice_id: string; message_id: string | null; text: string; style_prompt: string;
   status: 'queued' | 'running' | 'completed' | 'failed'; error: string | null;
   duration_seconds: number | null; generation_seconds: number | null; created_at: string;
+}
+
+export interface SpeechFeedback {
+  voice_id: string; style_prompt: string; thinking: SpeechJob | null; waiting: SpeechJob | null;
 }
 
 export interface Capabilities {

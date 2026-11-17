@@ -4,6 +4,7 @@ import { App as AntApp } from 'antd';
 import { SpeechJobPlayer, SpeechPlaylist, stopSpeechPlayback, VoicesPage } from './speech';
 import type { Api } from './api';
 import type { SpeechJob } from './types';
+import * as desktop from './desktop';
 
 const { play, pause, dispose, prepare, players } = vi.hoisted(() => ({
   play: vi.fn<() => Promise<void>>(), pause: vi.fn(), dispose: vi.fn(),
@@ -42,6 +43,20 @@ function apiMock() {
 }
 
 describe('sentence playback queue', () => {
+  it('keeps the waiting stage continuous across job status changes and clears it on unmount', async () => {
+    const waiting = vi.spyOn(desktop, 'reportSpeechWaiting');
+    try {
+      const api = apiMock(); let status: SpeechJob['status'] = 'running';
+      vi.mocked(api.speechJob).mockImplementation(async id => job(id, status));
+      const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming />);
+      await waitFor(() => expect(api.speechJob).toHaveBeenCalled());
+      status = 'completed';
+      await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j1'), { timeout: 2000 });
+      expect(waiting.mock.calls.some(([, active]) => !active)).toBe(false);
+      view.unmount(); expect(waiting.mock.calls.at(-1)?.[1]).toBe(false);
+    } finally { waiting.mockRestore(); }
+  });
+
   it('buffers the short opening and preloads the next sentence before starting smooth playback', async () => {
     const api = apiMock();
     const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming />);

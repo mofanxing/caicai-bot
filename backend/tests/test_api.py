@@ -42,9 +42,19 @@ def configure(client, cid, pid):
 
 
 def test_auth(client):
-    assert client.get("/health").json() == {"status": "ok"}
+    health = client.get("/health")
+    assert health.json() == {"status": "ok"}
+    assert health.headers["x-caicai-service"] == "caicai-bot"
+    assert "x-caicai-instance" not in health.headers
     assert client.get("/api/v1/providers").status_code == 401
     assert client.get("/api/v1/providers", headers=HEADERS).json() == []
+
+
+def test_desktop_health_instance(client):
+    client.app.state.desktop_run_id = "owned-test-instance"
+    response = client.get("/health")
+    assert response.headers["x-caicai-instance"] == "owned-test-instance"
+    assert response.json() == {"status": "ok"}
 
 
 def test_debug_dedup_and_persistence(client):
