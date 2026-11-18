@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -114,3 +114,93 @@ class SpeechJob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+class TaskProject(Base):
+    __tablename__ = "task_projects"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(100))
+    root: Mapped[str] = mapped_column(Text, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PluginConfig(Base):
+    __tablename__ = "plugin_configs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (UniqueConstraint("conversation_scope", "idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    # Preserve deduplication scope even after a conversation is deleted.
+    conversation_scope: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[str] = mapped_column(ForeignKey("task_projects.id"))
+    project_root: Mapped[str] = mapped_column(Text)
+    goal: Mapped[str] = mapped_column(Text)
+    agent_id: Mapped[str] = mapped_column(String(100))
+    plugin_version: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    timeout_seconds: Mapped[int] = mapped_column(default=600)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    event_seq: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class TaskAttempt(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (UniqueConstraint("task_id", "number"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    number: Mapped[int] = mapped_column(default=1)
+    executor_id: Mapped[str] = mapped_column(String(100))
+    executor_version: Mapped[str] = mapped_column(String(100))
+    run_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    process_group: Mapped[int | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(32))
+    exit_code: Mapped[int | None] = mapped_column(nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+    __table_args__ = (UniqueConstraint("task_id", "seq"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    attempt_id: Mapped[str | None] = mapped_column(ForeignKey("task_attempts.id"), nullable=True)
+    seq: Mapped[int] = mapped_column()
+    type: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict] = mapped_column(JSON)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TaskArtifact(Base):
+    __tablename__ = "task_artifacts"
+
+    id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("task_attempts.id"))
+    path: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(40))
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)

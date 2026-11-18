@@ -1,0 +1,99 @@
+"""Run with: python -m app.task_worker (same cwd / settings as the API)."""
+
+import logging
+import signal
+import threading
+
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.db import create_session_factory
+from app.migrations import initialize_database
+from app.models import TaskAttempt
+from app.tasks.codex import ExecutionResult
+from app.tasks.service import TaskService
+from app.tasks.storage import file_lock, lock_path
+
+logger = logging.getLogger(__name__)
+
+
+class TaskWorker:
+    def __init__(self, service):
+        self.service = service
+        self.stopping = threading.Event()
+
+    def run_forever(self):
+        with file_lock(lock_path(self.service.settings, "worker"), blocking=False):
+            self.service.recover()
+            while not self.stopping.is_set():
+                if not self.run_once():
+                    self.stopping.wait(self.service.settings.task_poll_seconds)
+
+    def run_once(self):
+        claimed = self.service.claim()
+        if not claimed:
+            return False
+        task, attempt = claimed
+        executor = self.service.registry.resolve(task.agent_id)[2]
+
+        def should_stop():
+            if self.stopping.is_set():
+                return "shutdown"
+            with self.service.session_factory() as db:
+                current = self.service.find(db, task.id)
+                return "cancelled" if current.status == "cancelling" else None
+
+        def on_started(pgid):
+            with self.service.transaction() as db:
+                db.get(TaskAttempt, attempt.id).process_group = pgid
+
+        try:
+            status = self.service.ensure_available(executor)
+            with self.service.transaction() as db:
+                db.get(TaskAttempt, attempt.id).executor_version = status["version"]
+            stop = should_stop()
+            if stop:
+                result = ExecutionResult(
+                    "cancelled" if stop == "cancelled" else "interrupted", stop
+                )
+            else:
+                result = executor.run(
+                    task,
+                    on_started,
+                    lambda kind, payload: self.service.record(task.id, attempt.id, kind, payload),
+                    should_stop,
+                )
+        except ServiceError as exc:
+            result = ExecutionResult("failed", exc.code)
+        except Exception:
+            # An adapter error may occur after launch; it is never safe to auto-replay.
+            logger.warning("Task adapter failed: task=%s", task.id)
+            result = ExecutionResult("interrupted", "adapter_error")
+        with self.service.transaction() as db:
+            current = self.service.find(db, task.id)
+            running = db.get(TaskAttempt, attempt.id)
+            self.service.finish(
+                db, current, running, result.status, result.reason, result.summary, result.exit_code
+            )
+        return True
+
+
+def main():
+    settings = Settings()
+    engine, factory = create_session_factory(settings.database_url)
+    initialize_database(engine)
+    service = TaskService(settings, factory)
+    worker = TaskWorker(service)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: worker.stopping.set())
+    try:
+        worker.run_forever()
+    except ServiceError as exc:
+        print(f"任务 worker 未启动：{exc.code} — {exc.message}")
+        return 1
+    finally:
+        engine.dispose()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.api.speech_routes import speech_router
+from app.api.task_routes import task_router
 from app.core.config import Settings
 from app.core.errors import ServiceError
 from app.core.secrets import SecretVault
@@ -14,6 +15,7 @@ from app.db import create_session_factory
 from app.migrations import initialize_database
 from app.services.chat import ChatService
 from app.services.speech import SpeechService
+from app.tasks.service import TaskService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -43,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.secret_vault = SecretVault(settings)
     app.state.speech_service = SpeechService(settings)
+    app.state.task_service = TaskService(settings, session_factory)
     app.state.chat_service = ChatService(settings, app.state.secret_vault, app.state.speech_service)
 
     @app.middleware("http")
@@ -72,4 +75,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(speech_router)
+    app.include_router(task_router)
     return app

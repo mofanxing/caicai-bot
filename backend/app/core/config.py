@@ -25,6 +25,8 @@ class Settings(BaseSettings):
         Path(__file__).resolve().parents[2] / "data/tts/models/VoxCPM2-4bit"
     )
     local_tts_timeout_seconds: float = Field(default=600, ge=10, le=1800)
+    codex_binary: str = "codex"
+    task_poll_seconds: float = Field(default=0.5, ge=0.05, le=10)
 
     @model_validator(mode="after")
     def validate_runtime(self):
