@@ -52,7 +52,7 @@ class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     conversation_id: str = Field(min_length=1, max_length=32)
     project_id: str = Field(min_length=1, max_length=32)
-    agent_id: str = "caicai.coding/coding"
+    agent_id: str = "caicai.deepseek/coding"
     goal: str = Field(min_length=1, max_length=16000)
     idempotency_key: str = Field(min_length=1, max_length=200)
     timeout_seconds: int = Field(default=600, ge=10, le=3600)
@@ -90,6 +90,7 @@ class TaskRead(BaseModel):
     status: str
     timeout_seconds: int
     result: str | None
+    current_step: str | None = None
     reason: str | None
     event_seq: int
     created_at: datetime

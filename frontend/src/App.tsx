@@ -11,12 +11,13 @@ import {
   SettingOutlined, SlidersOutlined, WechatOutlined,
 } from '@ant-design/icons';
 import { createApi, type Api } from './api';
+import { TaskCards, TaskComposer, TasksPage } from './tasks';
 import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile, SpeechFeedback } from './types';
 import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
 import { chatChannel, desktopHeaders, isDesktop, reportDesktopState } from './desktop';
 import { createWaitingFeedback, type WaitingFeedback, type FeedbackStatus } from './feedback';
 
-type Page = 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
+type Page = 'tasks' | 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
 const CONVERSATION_STORAGE = 'caicai.conversation';
 const PAGE_STORAGE = 'caicai.page';
@@ -354,7 +355,7 @@ export default function App() {
   const [connectionError, setConnectionError] = useState('');
   const [page, setPage] = useState<Page>(() => {
     const saved = sessionStorage.getItem(PAGE_STORAGE);
-    return saved === 'providers' || saved === 'voices' || saved === 'channels' || saved === 'connection'
+    return saved === 'tasks' || saved === 'providers' || saved === 'voices' || saved === 'channels' || saved === 'connection'
       ? saved : 'chat';
   });
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -366,6 +367,8 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [draft, setDraft] = useState('');
+  const [taskComposerOpen, setTaskComposerOpen] = useState(false);
+  const [taskRevision, setTaskRevision] = useState(0);
   const [pendingText, setPendingText] = useState('');
   const [autoRead, setAutoRead] = useState(() => localStorage.getItem('caicai.auto-read') !== 'false');
   const [autoReadMessage, setAutoReadMessage] = useState('');
@@ -593,6 +596,7 @@ export default function App() {
 
   const pageTitles: Record<Page, [string, string]> = {
     chat: [isDesktop ? '和菜菜聊天' : '聊天测试', '调好角色和音色，让每一句回应更亲近。'],
+    tasks: ['任务中心', '派发后台任务，查看真实步骤、文件改动与验证结果。'],
     providers: ['中转站管理', '一个工作台，连接不同的模型服务。'],
     voices: ['音色与语音', '熟悉的声音，在你的电脑上生成。'],
     channels: ['微信接入', '微信能力后续接入，先在本地体验菜菜。'],
@@ -621,7 +625,7 @@ export default function App() {
     <div className="sidebar-label">工作空间</div><nav aria-label="主导航">
       {([
         ['chat', <CommentOutlined />, isDesktop ? '和菜菜聊天' : '聊天测试'], ['providers', <CloudServerOutlined />, '中转站管理'],
-        ['voices', <AudioOutlined />, '音色与语音'], ['channels', <WechatOutlined />, '微信接入'], ['connection', <SettingOutlined />, '连接设置'],
+        ['tasks', <CheckOutlined />, '任务中心'], ['voices', <AudioOutlined />, '音色与语音'], ['channels', <WechatOutlined />, '微信接入'], ['connection', <SettingOutlined />, '连接设置'],
       ] as const).map(([key, icon, label]) => <button key={key} className={'nav-item ' + (page === key ? 'selected' : '')}
         aria-label={label} title={label} onClick={() => setPage(key)}>{icon}<span>{label}</span>{page === key && <i />}</button>)}
     </nav><div className="sidebar-note"><span className="sidebar-note-icon"><ExperimentOutlined /></span>
@@ -635,6 +639,7 @@ export default function App() {
       }}>桌宠设置</Button>}
       <Avatar style={{ background: '#e4eadf', color: '#45614d' }}>我</Avatar></div></header>
 
+    {page === 'tasks' && <TasksPage api={api} conversations={debugConversations} conversationId={activeId || undefined} />}
     {page === 'providers' && <ProvidersPage api={api} providers={providers} disabled={busy}
       onAdded={p => setProviders(previous => [...previous, p])}
       onChanged={updated => setProviders(previous => previous.map(p => p.id === updated.id ? updated : p))}
@@ -685,11 +690,12 @@ export default function App() {
           {sending && pendingText && <><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{pendingText}</div></div><Avatar>我</Avatar></div>
             <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="typing-bubble"><span /><span /><span /><small>菜菜正在想一想</small></div></div></>}
         </>}
+        {activeId && <TaskCards key={activeId} api={api} conversationId={activeId} refreshKey={taskRevision} />}
       </div><div className="composer"><Input.TextArea aria-label="聊天内容" value={draft} onChange={event => setDraft(event.target.value)}
         disabled={!active || busy} placeholder={active ? '和菜菜聊点什么…' : '创建会话后开始聊天'} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={16000}
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-        <div className="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><Button type="primary" icon={<SendOutlined />} loading={sending}
-          disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div>
+        <div className="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><Button className="chat-task-entry" disabled={!active || busy} onClick={() => setTaskComposerOpen(true)}>交给菜菜执行</Button><Button data-chat-send type="primary" icon={<SendOutlined />} loading={sending}
+          disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div></div>
       <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} {isDesktop ? '当前为桌面聊天，消息不会发送到微信。' : '当前为网页测试，消息不会发送到微信。'}</div>
     </section><aside className="chat-settings">{active && capabilities ? <ModelSettings key={active.id} api={api} conversation={active}
       providers={providers} voices={voices} capabilities={capabilities} disabled={busy}
@@ -723,7 +729,10 @@ export default function App() {
       <div className="capability-row"><span>微信 / 语音识别</span><Tag>待接入</Tag></div>
       <p className="muted">令牌和 API Key 不会写入前端源码。后端环境文件不要提交到 Git。</p></Card></div>}
     <footer className="workspace-footer"><span>CAICAI BOT</span><span>一点智能，一点陪伴。</span></footer>
-  </main><Modal title={'新建' + CONVERSATION_LABEL} open={newChatOpen} confirmLoading={creating} okText="创建会话"
+  </main><TaskComposer api={api} conversations={debugConversations} conversationId={activeId || undefined}
+    draft={draft} open={taskComposerOpen} onClose={() => setTaskComposerOpen(false)}
+    onCreated={() => { setTaskComposerOpen(false); setDraft(''); setTaskRevision(v => v + 1); message.success('任务已排队，可在任务卡片中查看进度'); }} />
+  <Modal title={'新建' + CONVERSATION_LABEL} open={newChatOpen} confirmLoading={creating} okText="创建会话"
     cancelText="取消" okButtonProps={{ disabled: !newChatName.trim() }} onOk={createConversation}
     onCancel={() => !creating && setNewChatOpen(false)} closable={!creating} maskClosable={!creating}>
     <p className="muted">每个会话有独立的模型设置和聊天记录，不会发送到微信。</p>

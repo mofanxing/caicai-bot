@@ -19,6 +19,8 @@ export async function checkBackendLifecycle({ showControl, showChat, origin, tok
   let state = await status();
   if (expected === 'managed') {
     assert.equal(state.state, 'ready'); assert.equal(state.mode, 'managed'); assert.equal(state.owned, true);
+    const worker = await (await fetch(origin + '/api/v1/task-runtime', { headers: { ...headers, Authorization: 'Bearer ' + process.env.ADMIN_TOKEN } })).json();
+    assert.equal(worker.mode, 'managed'); assert.equal(worker.state, 'running');
     const record = manager.child;
     const chat = showChat(false); chat.close();
     assert.equal(chat.isDestroyed(), false); assert.equal(chat.isVisible(), false);

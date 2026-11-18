@@ -124,7 +124,7 @@ async function boot() {
     secureResponse(res, url.pathname);
     if (!security.authorize(req, res, url.pathname.startsWith(prefix + '/'))) return;
     if (url.pathname.startsWith('/api/v1/')) {
-      proxyBackend(req, res, backend, url.pathname); return;
+      proxyBackend(req, res, backend, url.pathname + url.search); return;
     }
     if (req.method === 'GET' && url.pathname.startsWith('/chat/')) {
       const directory = join(root, 'chat');

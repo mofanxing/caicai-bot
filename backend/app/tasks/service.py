@@ -16,9 +16,11 @@ from app.models import (
     new_id,
     utc_now,
 )
-from app.tasks.codex import CodexExecutor, process_group_exists, project_root
-from app.tasks.contracts import ACTIVE, TERMINAL
-from app.tasks.registry import CODING_MANIFEST, PluginRegistry
+from app.tasks.codex import CodexExecutor
+from app.tasks.contracts import ACTIVE, TERMINAL, TaskRead
+from app.tasks.deepseek import DeepSeekExecutor
+from app.tasks.process import process_group_exists, project_root
+from app.tasks.registry import CODING_MANIFEST, DEEPSEEK_MANIFEST, PluginRegistry
 from app.tasks.storage import file_lock, lock_path
 
 
@@ -26,8 +28,11 @@ class TaskService:
     def __init__(self, settings, session_factory):
         self.settings = settings
         self.session_factory = session_factory
-        self.registry = PluginRegistry({"codex-cli": CodexExecutor(settings)})
+        self.registry = PluginRegistry(
+            {"codex-cli": CodexExecutor(settings), "deepseek-harness": DeepSeekExecutor(settings)}
+        )
         self.registry.register(CODING_MANIFEST)
+        self.registry.register(DEEPSEEK_MANIFEST)
 
     @contextmanager
     def transaction(self):
@@ -56,6 +61,27 @@ class TaskService:
             raise ServiceError("task_not_found", "任务不存在", 404)
         return task
 
+    def present(self, db, task):
+        step = {"queued": "等待 worker 领取", "cancelling": "正在停止执行进程"}.get(task.status)
+        if task.status in ACTIVE and not step:
+            recent = db.scalars(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task.id)
+                .order_by(TaskEvent.seq.desc())
+                .limit(20)
+            )
+            for event in recent:
+                payload = event.payload
+                if payload.get("kind") in {"tool_call", "tool_result"}:
+                    step = (
+                        "正在执行：" if payload["kind"] == "tool_call" else "工具已返回："
+                    ) + str(payload.get("command") or payload.get("tool") or "工具调用")[:200]
+                    break
+                if payload.get("kind") == "agent_message":
+                    step = str(payload.get("message", ""))[:200]
+                    break
+        return TaskRead.model_validate(task).model_copy(update={"current_step": step})
+
     def plugins(self):
         with self.session_factory() as db:
             result = []
@@ -69,11 +95,7 @@ class TaskService:
                         "executor": {
                             "id": executor.id,
                             "capabilities": sorted(executor.capabilities),
-                            "limitations": [
-                                "workspace-write 限制写入，不提供仅能读取项目的隔离",
-                                "不支持交互确认、恢复执行及自定义 MCP / hooks",
-                                "可用性检查不代替认证后的真实任务与沙箱验收",
-                            ],
+                            "limitations": executor.limitations,
                             **executor.check_availability(),
                         },
                     }
@@ -152,7 +174,7 @@ class TaskService:
             project = db.get(TaskProject, payload.project_id)
             if not project:
                 raise ServiceError("project_not_found", "项目尚未登记", 404)
-            if str(project_root(project.root)) != project.root:
+            if str(executor.validate_project(project.root)) != project.root:
                 raise ServiceError("project_changed", "登记项目目录已改变", 409)
             self.ensure_no_unreviewed_interruption(db)
             task = Task(

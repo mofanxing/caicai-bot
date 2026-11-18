@@ -1,5 +1,6 @@
 import type { Capabilities, ChatMessage, Conversation, ConversationSettings, Provider, ProviderCreate,
   VoiceProfile, SpeechStatus, SpeechJob, SpeechFeedback, ChatStreamEvent } from './types';
+import type { TaskRecord, TaskProject, TaskPlugin, TaskEvent, TaskDetail, TaskSubmission } from './types';
 import { chatChannel, desktopHeaders } from './desktop';
 
 export async function streamChat(token: string, id: string, text: string, externalId: string,
@@ -105,6 +106,28 @@ export async function request<T>(token: string, path: string, init: RequestInit 
 }
 
 export const createApi = (token: string) => ({
+  taskRuntime: () => request<{ mode: string; state: string }>(token, '/task-runtime'),
+  reportTask: (id: string) => request<{ text: string; source_seq: number; cached: boolean }>(token,
+    '/tasks/' + encodeURIComponent(id) + '/report', { method: 'POST' }),
+  taskPlugins: () => request<TaskPlugin[]>(token, '/plugins'),
+  enableTaskPlugin: (id: string, enabled: boolean) => request<{ id: string; enabled: boolean }>(
+    token, '/plugins/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  taskProjects: () => request<TaskProject[]>(token, '/projects'),
+  addTaskProject: (name: string, root: string) => request<TaskProject>(token, '/projects', {
+    method: 'POST', body: JSON.stringify({ name, root }) }),
+  tasks: (conversationId?: string, signal?: AbortSignal) => request<TaskRecord[]>(token,
+    '/tasks' + (conversationId ? '?conversation_id=' + encodeURIComponent(conversationId) : ''), { signal }),
+  createTask: (payload: TaskSubmission) => request<TaskRecord>(token, '/tasks', {
+    method: 'POST', body: JSON.stringify(payload) }),
+  taskDetail: (id: string, signal?: AbortSignal) => request<TaskDetail>(token,
+    '/tasks/' + encodeURIComponent(id), { signal }),
+  taskEvents: (id: string, after: number, signal?: AbortSignal) => request<TaskEvent[]>(token,
+    '/tasks/' + encodeURIComponent(id) + '/events?after=' + after + '&limit=500', { signal }),
+  cancelTask: (id: string) => request<TaskRecord>(token,
+    '/tasks/' + encodeURIComponent(id) + '/cancel', { method: 'POST' }),
+  acknowledgeTask: (id: string) => request<TaskRecord>(token,
+    '/tasks/' + encodeURIComponent(id) + '/acknowledge-interruption', {
+      method: 'POST', body: JSON.stringify({ confirm_no_running_process: true }) }),
   sendStream: (id: string, text: string, externalId: string, onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal) => streamChat(token, id, text, externalId, onEvent, signal),
   speechStatus: () => request<SpeechStatus>(token, '/speech/status'),

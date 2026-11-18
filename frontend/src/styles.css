@@ -235,3 +235,14 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .feedback-settings h4 { margin: 0 0 18px; font-size: 13px; color: #344d3e; }
 .feedback-settings .ant-input-textarea-show-count { margin-bottom: 8px; }
 .feedback-settings [role="status"] { margin-top: 12px; overflow-wrap: anywhere; }
+
+.task-cards { display: grid; gap: 12px; margin: 16px 0; }
+.task-cards .ant-card-head-title { white-space: normal; overflow-wrap: anywhere; }
+.task-cards .ant-space-item { min-width: 0; }
+.task-preview { white-space: pre-wrap; max-height: 90px; overflow: hidden; }
+.task-output { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding: 12px; background: #f5f6f3; border-radius: 8px; max-height: 420px; overflow: auto; }
+.task-event { border-bottom: 1px solid #e4e8df; padding: 12px 0; overflow-wrap: anywhere; }
+.task-event small, .task-hash { display: block; color: #6c7567; overflow-wrap: anywhere; }
+.tasks-page > .ant-alert, .tasks-page > .ant-collapse { margin-bottom: 16px; }
+.tasks-page .ant-card { margin-bottom: 12px; }
+.chat-task-entry { margin-right: 8px; }

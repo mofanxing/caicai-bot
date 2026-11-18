@@ -53,3 +53,32 @@ test('后端离线时返回可理解的错误，不暴露网络细节', async t 
   const response = await fetch(`http://127.0.0.1:${proxy.address().port}/api/v1/capabilities`);
   assert.equal(response.status, 502); assert.match((await response.json()).error.message, /重试连接.*启动后端/);
 });
+
+test('任务接口允许已定义方法与分页参数，并拒绝其他查询或越界路径', () => {
+  for (const [path, method] of [
+    ['/api/v1/plugins', 'GET'], ['/api/v1/plugins/caicai.deepseek', 'PUT'],
+    ['/api/v1/projects', 'POST'], ['/api/v1/task-runtime', 'GET'],
+    ['/api/v1/tasks', 'POST'], ['/api/v1/tasks?conversation_id=c1&limit=50', 'GET'],
+    ['/api/v1/tasks/t1/events?after=500&limit=500', 'GET'], ['/api/v1/tasks/t1', 'GET'],
+    ['/api/v1/tasks/t1/cancel', 'POST'], ['/api/v1/tasks/t1/report', 'POST'],
+    ['/api/v1/tasks/t1/acknowledge-interruption', 'POST'],
+  ]) assert.equal(allowedBackendPath(path, method), true, method + ' ' + path);
+  for (const [path, method] of [
+    ['/api/v1/tasks?target=http://evil', 'GET'], ['/api/v1/tasks/t1/events?after=1&after=2', 'GET'],
+    ['/api/v1/tasks/t1/cancel?target=x', 'POST'], ['/api/v1/tasks?limit=50', 'POST'],
+    ['/api/v1/plugins/../tasks', 'PUT'], ['/api/v1/projects/p1', 'DELETE'],
+  ]) assert.equal(allowedBackendPath(path, method), false, method + ' ' + path);
+});
+
+test('真实代理保留任务事件游标与会话过滤，避免重连重复补读', async t => {
+  const backend = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ path: req.url }));
+  });
+  backend.listen(0, '127.0.0.1'); await once(backend, 'listening');
+  const proxy = createServer((req, res) => proxyBackend(req, res,
+    'http://127.0.0.1:' + backend.address().port, req.url));
+  proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
+  t.after(() => { proxy.closeAllConnections(); proxy.close(); backend.closeAllConnections(); backend.close(); });
+  const path = '/api/v1/tasks/t1/events?after=500&limit=100';
+  assert.equal((await (await fetch('http://127.0.0.1:' + proxy.address().port + path)).json()).path, path);
+});

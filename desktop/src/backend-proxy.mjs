@@ -3,7 +3,24 @@ import { request } from 'node:http';
 // Fixed local origin and an explicit API surface; never forward cookies or pet credentials.
 export function allowedBackendPath(path, method) {
   const id = '[a-zA-Z0-9_-]+';
+  const [pathname, query = ''] = path.split('?');
+  if (path.split('?').length > 2) return false;
+  if (query) {
+    const fields = pathname === '/api/v1/tasks' ? ['conversation_id', 'limit']
+      : new RegExp('^/api/v1/tasks/' + id + '/events$').test(pathname) ? ['after', 'limit'] : [];
+    const params = new URLSearchParams(query);
+    if (method !== 'GET' || !fields.length || [...params.keys()].some(key =>
+      !fields.includes(key) || params.getAll(key).length !== 1)) return false;
+    for (const [key, value] of params) {
+      if (key === 'conversation_id' ? !/^[a-zA-Z0-9_-]+$/.test(value) : !/^[0-9]+$/.test(value)) return false;
+    }
+  }
   const rules = [
+    ['GET', '^/api/v1/(plugins|projects|tasks|task-runtime)$'],
+    ['POST', '^/api/v1/(projects|tasks)$'],
+    ['PUT', '^/api/v1/plugins/[a-zA-Z0-9_-]+(?:[.][a-zA-Z0-9_-]+)*$'],
+    ['GET', '^/api/v1/tasks/' + id + '(?:/events)?$'],
+    ['POST', '^/api/v1/tasks/' + id + '/(?:cancel|report|acknowledge-interruption)$'],
     ['GET', '^/api/v1/(capabilities|providers|conversations|voices|speech/status|speech/jobs)$'],
     ['POST', '^/api/v1/(providers|conversations|voices)$'],
     ['GET', `^/api/v1/providers/${id}/models$`],
@@ -21,7 +38,7 @@ export function allowedBackendPath(path, method) {
     ['GET', `^/api/v1/speech/jobs/${id}/audio$`],
     ['POST', `^/api/v1/speech/jobs/${id}/retry$`],
   ];
-  return rules.some(([methods, pattern]) => methods.split('|').includes(method) && new RegExp(pattern).test(path));
+  return rules.some(([methods, pattern]) => methods.split('|').includes(method) && new RegExp(pattern).test(pathname));
 }
 
 export function proxyBackend(req, res, backend, path) {

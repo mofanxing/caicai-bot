@@ -35,6 +35,7 @@ def main():
     except Exception:
         report("startup_failed")
         return 1
+    app.state.manage_task_worker = True
     app.state.desktop_run_id = os.environ.get("CAICAI_DESKTOP_RUN_ID", "")
     server = uvicorn.Server(uvicorn.Config(
         app, host=args.host, port=args.port, log_config=None, access_log=False,

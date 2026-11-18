@@ -1,3 +1,5 @@
+import copy
+
 from app.core.errors import ServiceError
 from app.tasks.contracts import CAPABILITIES, PluginManifest
 
@@ -25,6 +27,13 @@ CODING_MANIFEST = {
         }
     ],
 }
+
+
+DEEPSEEK_MANIFEST = copy.deepcopy(CODING_MANIFEST)
+DEEPSEEK_MANIFEST.update(id="caicai.deepseek", name="DeepSeek 编程助手")
+DEEPSEEK_MANIFEST["agents"][0].update(
+    description="使用 DeepSeek Harness 执行项目任务", executor_id="deepseek-harness"
+)
 
 
 class PluginRegistry:

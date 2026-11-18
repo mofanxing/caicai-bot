@@ -18,6 +18,11 @@ from app.tasks.contracts import (
 task_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
 
 
+@task_router.get("/task-runtime")
+def task_runtime(request: Request):
+    return request.app.state.task_worker_host.status()
+
+
 @task_router.get("/plugins")
 def plugins(request: Request):
     return request.app.state.task_service.plugins()
@@ -45,19 +50,23 @@ def create_task(payload: TaskCreate, request: Request):
 
 @task_router.get("/tasks", response_model=list[TaskRead])
 def tasks(
-    conversation_id: str | None = None, limit: int = Query(50, ge=1, le=200), db=Depends(get_db)
+    request: Request,
+    conversation_id: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    db=Depends(get_db),
 ):
     query = select(Task)
     if conversation_id:
         query = query.where(Task.conversation_id == conversation_id)
-    return db.scalars(query.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)).all()
+    rows = db.scalars(query.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)).all()
+    return [request.app.state.task_service.present(db, task) for task in rows]
 
 
 @task_router.get("/tasks/{task_id}")
 def task_detail(task_id: str, request: Request, db=Depends(get_db)):
     task = request.app.state.task_service.find(db, task_id)
     return {
-        "task": TaskRead.model_validate(task),
+        "task": request.app.state.task_service.present(db, task),
         "attempts": [
             AttemptRead.model_validate(attempt)
             for attempt in db.scalars(
@@ -95,6 +104,11 @@ def events(
         .order_by(TaskEvent.seq)
         .limit(limit)
     ).all()
+
+
+@task_router.post("/tasks/{task_id}/report")
+def report_task(task_id: str, request: Request):
+    return request.app.state.task_reports.generate(task_id)
 
 
 @task_router.post("/tasks/{task_id}/cancel", response_model=TaskRead)

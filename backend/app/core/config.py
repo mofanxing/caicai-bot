@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     )
     local_tts_timeout_seconds: float = Field(default=600, ge=10, le=1800)
     codex_binary: str = "codex"
+    deepseek_binary: str = "dsh"
+    deepseek_home: str = ""
+    deepseek_model_profile: str = Field(default="desktop", pattern=r"^[A-Za-z0-9_-]{1,80}$")
     task_poll_seconds: float = Field(default=0.5, ge=0.05, le=10)
 
     @model_validator(mode="after")

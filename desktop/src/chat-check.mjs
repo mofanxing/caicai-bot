@@ -63,7 +63,7 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   await evaluate(`{ const input = document.querySelector('textarea[aria-label=聊天内容]');
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '桌面验收：你好菜菜');
     input.dispatchEvent(new Event('input', { bubbles: true })); }`);
-  await wait("document.querySelector('.composer button')?.disabled === false");
+  await wait("document.querySelector('.composer [data-chat-send]')?.disabled === false");
   const bubbleTexts = new Set();
   let sampling = true;
   const sampleBubbles = (async () => {
@@ -76,7 +76,7 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
       await new Promise(resolve => setTimeout(resolve, 30));
     }
   })();
-  await evaluate("document.querySelector('.composer button').click()");
+  await evaluate("document.querySelector('.composer [data-chat-send]').click()");
   await wait("document.querySelector('.message-row.assistant .bubble')?.textContent.includes('桌面链路验收') === true");
   window.close(); assert.equal(window.isDestroyed(), false); assert.equal(window.isVisible(), false);
   await wait("document.querySelector('.speech-progress')?.textContent.includes('朗读完成') === true");
@@ -124,11 +124,18 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   window.close(); assert.equal(window.isDestroyed(), false); assert.equal(window.isVisible(), false);
   assert.equal(showChat(false), window);
   assert.equal(await evaluate("document.querySelector('.message-row.assistant .bubble')?.textContent.includes('桌面链路验收')"), true);
+  await evaluate("document.querySelector('[aria-label=任务中心]').click()");
+  await wait("document.querySelector('.tasks-page') !== null");
+  await wait("document.querySelectorAll('.tasks-page .ant-card').length >= 2 && document.querySelector('.tasks-page .ant-card')?.parentElement.textContent.includes('DeepSeek') === true");
+  await evaluate("document.querySelector('.tasks-page').scrollIntoView({ block: 'start', behavior: 'instant' })");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const tasksPicture = await window.webContents.capturePage();
+  writeFileSync(join(data, 'tasks-smoke.png'), tasksPicture.toPNG());
   assert.deepEqual(errors, []);
   const result = { passed: true, channel: conversation.channel, messages: history.length, speechSegments: history[0].speech_job_ids.length,
     phases: [...chatPhases], animationPlayback: receipt.status, closeHidesWindow: true, rendererErrors: errors.length,
     nativeBubbleSegments: segments.length,
-    configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true };
+    configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true, taskCenterVisible: true };
   writeFileSync(join(data, 'chat-smoke.json'), JSON.stringify(result, null, 2));
   console.log('[caicai-chat-check] ' + JSON.stringify(result));
 }

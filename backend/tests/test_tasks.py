@@ -105,6 +105,7 @@ def tasks(client, tmp_path):
         },
     ).json()["id"]
     payload = {
+        "agent_id": "caicai.coding/coding",
         "project_id": project["id"],
         "conversation_id": cid,
         "goal": "check fixture",
