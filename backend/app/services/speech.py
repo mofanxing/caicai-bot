@@ -10,6 +10,7 @@ from sqlalchemy import or_, select, update
 from app.core.errors import ServiceError
 from app.integrations.local_speech import LocalSpeechEngine
 from app.models import Conversation, Message, SpeechJob, Voice, new_id
+from app.services.speech_text import speech_boundary
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running")
@@ -126,6 +127,22 @@ class SpeechService:
                     and (previous.status != "completed" or self.audio_path(previous.id).is_file())
                 ):
                     return previous
+            if message and not segment and len(text) > 120 and text.strip():
+                # Persist independently playable jobs for manual/non-streaming reads too.
+                # All segments of this message share one queue admission slot.
+                first_job = None
+                pending = text
+                while pending:
+                    cut = speech_boundary(pending, first=first_job is None) or len(pending)
+                    part, pending = pending[:cut], pending[cut:]
+                    if not part.strip():
+                        continue
+                    job = self.enqueue(db, voice, part, style_prompt, message, segment=True)
+                    if first_job is None:
+                        first_job = job
+                        message.speech_job_id = job.id
+                        db.commit()
+                return first_job
             job = SpeechJob(
                 id=new_id(),
                 voice_id=voice.id,
@@ -134,12 +151,7 @@ class SpeechService:
                 style_prompt=voice.style_prompt if style_prompt is None else style_prompt,
                 status="queued",
             )
-            if len(text) > 600:
-                job.status, job.error = (
-                    "failed",
-                    "单次语音最多支持 600 字，请使用较短回复或在音色页分段试听",
-                )
-            elif (
+            if (
                 len(
                     db.scalars(
                         select(SpeechJob.id).where(

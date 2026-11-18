@@ -5,7 +5,13 @@ from sqlalchemy import select
 from app.api.routes import find_local_conversation, get_db, require_admin
 from app.core.errors import ServiceError
 from app.models import Message, SpeechJob, Voice
-from app.schemas import SpeechFeedbackRead, SpeechJobRead, SpeechPreview, VoiceRead
+from app.schemas import (
+    MessageSpeechRead,
+    SpeechFeedbackRead,
+    SpeechJobRead,
+    SpeechPreview,
+    VoiceRead,
+)
 from app.services.speech import ACTIVE
 
 speech_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
@@ -125,8 +131,6 @@ def retry_speech_job(job_id: str, request: Request, db=Depends(get_db)):
         ):
             return job
         find_voice(db, job.voice_id)
-        if len(job.text) > 600:
-            raise ServiceError("text_too_long", "单次语音最多支持 600 字", 422)
         active = db.scalars(select(SpeechJob.id).where(SpeechJob.status.in_(ACTIVE))).all()
         if len(active) >= 8:
             raise ServiceError("speech_busy", "语音队列已满，请稍后手动重试", 409)
@@ -176,7 +180,7 @@ def delete_speech_job(job_id: str, request: Request, db=Depends(get_db)):
 
 @speech_router.post(
     "/conversations/{conversation_id}/messages/{message_id}/speech",
-    response_model=SpeechJobRead,
+    response_model=MessageSpeechRead,
     status_code=202,
 )
 def retry_message_speech(
@@ -191,6 +195,11 @@ def retry_message_speech(
         if message.status != "completed" or not message.assistant_text:
             raise ServiceError("message_not_ready", "请先完成文字回复", 409)
         voice = find_voice(db, conversation.voice_id)
-        return speech.enqueue(
+        job = speech.enqueue(
             db, voice, message.assistant_text, conversation.voice_prompt or None, message
         )
+        db.expire(message, ["speech_jobs"])
+        return {
+            **SpeechJobRead.model_validate(job).model_dump(),
+            "speech_job_ids": message.speech_job_ids,
+        }

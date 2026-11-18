@@ -158,9 +158,8 @@ class ChatService:
 
                 def speak(text):
                     nonlocal spoken, voice
-                    if not voice or not text.strip() or spoken >= 600:
+                    if not voice or not text.strip():
                         return
-                    text = text[: 600 - spoken]
                     with self.speech.guard:
                         if db.scalar(select(Voice.id).where(Voice.id == voice.id)) is None:
                             voice = None
@@ -199,10 +198,6 @@ class ChatService:
                         speak(pending[:cut])
                         pending = pending[cut:]
                 speak(pending)
-                if voice and len(message.assistant_text) > 600:
-                    on_event(
-                        {"type": "notice", "message": "回复超过 600 字，仅为前 600 字生成语音。"}
-                    )
             elif conversation.provider_id:
                 provider = db.get(Provider, conversation.provider_id)
                 message.assistant_text = self.llm.complete(
@@ -231,15 +226,17 @@ class ChatService:
                 with self.speech.guard:
                     voice = db.get(Voice, conversation.voice_id)
                     if voice:
-                        job = self.speech.enqueue(
+                        self.speech.enqueue(
                             db,
                             voice,
-                            message.assistant_text[:600] if on_event else message.assistant_text,
+                            message.assistant_text,
                             style_prompt=conversation.voice_prompt or None,
                             message=message,
                         )
                         if on_event:
-                            on_event({"type": "speech", "job_id": job.id})
+                            db.expire(message, ["speech_jobs"])
+                            for job_id in message.speech_job_ids:
+                                on_event({"type": "speech", "job_id": job_id})
             return message
         except Exception:
             message.status = "delivery_unknown" if message.status == "sending" else "failed"

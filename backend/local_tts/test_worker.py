@@ -79,6 +79,14 @@ class WorkerTests(unittest.TestCase):
         calls, _ = self.generate("另一次试听。")
         self.assertNotIn("prompt_audio", calls[0])
 
+    def test_long_audio_has_no_240_second_total_limit(self):
+        self.rate = 8000
+        self.wave = np.full(self.rate * 81, 0.1, dtype=np.float32)
+        calls, duration = self.generate(("好" * 70 + "。") * 3)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(duration, 243)
+        self.assertEqual(sf.info(self.root / "out.wav").duration, 243)
+
     def test_external_anchor_is_used_for_all_chunks(self):
         anchor = self.root / "anchor.wav"
         sf.write(anchor, self.wave * 0.2, self.rate)

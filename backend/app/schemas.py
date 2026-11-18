@@ -148,7 +148,7 @@ class VoiceRead(BaseModel):
 
 class SpeechPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1, max_length=600)
+    text: str = Field(min_length=1)
     style_prompt: str | None = Field(default=None, max_length=500)
 
     @field_validator("text")
@@ -171,6 +171,10 @@ class SpeechJobRead(BaseModel):
     duration_seconds: float | None
     generation_seconds: float | None
     created_at: datetime
+
+
+class MessageSpeechRead(SpeechJobRead):
+    speech_job_ids: list[str]
 
 
 class SpeechFeedbackRead(BaseModel):

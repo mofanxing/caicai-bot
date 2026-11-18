@@ -155,7 +155,7 @@ export const createApi = (token: string) => ({
     token, '/conversations/' + encodeURIComponent(conversationId) + '/speech-feedback', { signal }),
   deleteSpeechJob: (id: string) => request<{ deleted: boolean }>(
     token, '/speech/jobs/' + encodeURIComponent(id), { method: 'DELETE' }),
-  messageSpeech: (conversationId: string, messageId: string) => request<SpeechJob>(
+  messageSpeech: (conversationId: string, messageId: string) => request<SpeechJob & { speech_job_ids?: string[] }>(
     token, '/conversations/' + encodeURIComponent(conversationId) + '/messages/'
       + encodeURIComponent(messageId) + '/speech', { method: 'POST' }),
   capabilities: () => request<Capabilities>(token, '/capabilities'),

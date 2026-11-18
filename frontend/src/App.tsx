@@ -210,7 +210,7 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
           {feedbackPlaybackStatus === 'failed' && ' 语音加载失败，请刷新或重新生成。'}
         </p>
       </div>
-      <p className="muted compact">文字边生成边显示，语音合并短句后分段合成。打开顶部「自动朗读」，默认缓冲后连读，也可切换低延迟。最多朗读前 600 字，首次加载模型较慢。</p>
+      <p className="muted compact">文字边生成边显示，语音合并短句后分段合成并完整朗读。打开顶部「自动朗读」，默认就绪即播，也可选择短暂缓冲。首次加载模型较慢。</p>
       {dirty && <p className="unsaved">有未保存的修改，保存后新消息才会使用。</p>}
       <Button htmlType="submit" type="primary" block loading={saving} disabled={disabled}>保存聊天设置</Button>
     </Form>
@@ -377,7 +377,7 @@ export default function App() {
   const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus>('idle');
   const waitingFeedback = useRef<WaitingFeedback>();
   const [playbackMode, setPlaybackMode] = useState<'smooth' | 'realtime'>(() =>
-    localStorage.getItem('caicai.playback-mode') === 'realtime' ? 'realtime' : 'smooth');
+    localStorage.getItem('caicai.playback-mode') === 'smooth' ? 'smooth' : 'realtime');
   const streamController = useRef<AbortController | null>(null);
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);

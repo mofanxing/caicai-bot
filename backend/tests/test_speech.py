@@ -80,17 +80,33 @@ def test_stream_synthesizes_first_sentence_before_llm_finishes(
     assert all(not client.app.state.speech_service.audio_path(job_id).exists() for job_id in ids)
 
 
-def test_stream_caps_speech_explicitly_and_keeps_full_text(client, engine):
+def test_stream_speaks_full_reply_beyond_600_characters(client, engine):
     voice = add_voice(client)
     cid = conversation(client, voice["id"], "both")
-    events = stream_send(client, cid, "好" * 700)
+    events = stream_send(client, cid, "好" * 2000)
     assert events[-1]["type"] == "done"
-    assert any(event["type"] == "notice" for event in events)
+    assert not any(event["type"] == "notice" for event in events)
     ids = events[-1]["message"]["speech_job_ids"]
     jobs = [wait_job(client, job_id) for job_id in ids]
     assert all(job["status"] == "completed" for job in jobs)
-    assert sum(len(job["text"]) for job in jobs) == 600
-    assert len(events[-1]["message"]["assistant_text"]) > 700
+    assert len(jobs) > 8
+    assert "".join(job["text"] for job in jobs) == events[-1]["message"]["assistant_text"]
+    assert all(len(job["text"]) <= 120 for job in jobs)
+
+
+def test_long_task_reply_stream_announces_every_speech_segment(client, engine, monkeypatch):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], "both")
+    intents = client.app.state.chat_service.task_intents
+    monkeypatch.setattr(intents, "respond", lambda *args: "任务结果。" * 200)
+    events = stream_send(client, cid)
+    assert events[-1]["type"] == "done"
+    ids = [event["job_id"] for event in events if event["type"] == "speech"]
+    assert len(ids) > 8
+    assert ids == events[-1]["message"]["speech_job_ids"]
+    jobs = [wait_job(client, job_id) for job_id in ids]
+    assert all(job["status"] == "completed" for job in jobs)
+    assert "".join(job["text"] for job in jobs) == "任务结果。" * 200
 
 
 def test_retry_segment_and_missing_audio_reuses_job(client, engine, monkeypatch):
@@ -396,12 +412,56 @@ def test_preview_inherits_default_and_empty_prompt_means_natural(client, engine)
 def test_preview_validates_text_and_missing_runtime(client, engine, monkeypatch):
     voice = add_voice(client)
     url = f"/api/v1/voices/{voice['id']}/previews"
-    for text in (" ", "x" * 601):
+    for text in (" ", ""):
         assert client.post(url, headers=HEADERS, json={"text": text}).status_code == 422
     monkeypatch.setattr(engine[0], "status", lambda: {"available": False, "detail": "尚未安装"})
     response = client.post(url, headers=HEADERS, json={"text": "你好"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "tts_not_ready"
+
+
+def test_long_preview_and_retry_accept_full_text(client, engine, monkeypatch):
+    local, calls, synthesize = engine
+    voice = add_voice(client)
+    monkeypatch.setattr(
+        local, "synthesize", lambda *args: (_ for _ in ()).throw(ServiceError("test", "失败", 503))
+    )
+    response = client.post(
+        f"/api/v1/voices/{voice['id']}/previews",
+        headers=HEADERS, json={"text": "长" * 1000},
+    )
+    assert response.status_code == 202
+    job = wait_job(client, response.json()["id"])
+    assert job["status"] == "failed"
+    monkeypatch.setattr(local, "synthesize", synthesize)
+    response = client.post(f"/api/v1/speech/jobs/{job['id']}/retry", headers=HEADERS)
+    assert response.status_code == 202
+    assert wait_job(client, job["id"])["status"] == "completed"
+    assert calls == [("长" * 1000, "温柔自然")]
+
+
+@pytest.mark.parametrize("mode", ["text", "both"])
+def test_long_message_manual_read_returns_all_segments_and_reuses_jobs(client, engine, mode):
+    voice = add_voice(client)
+    cid = conversation(client, voice["id"], mode)
+    response = client.post(
+        f"/api/v1/debug/conversations/{cid}/messages", headers=HEADERS,
+        json={"external_id": "long-manual", "text": "长" * 2000},
+    )
+    assert response.status_code == 200
+    message = response.json()
+    url = f"/api/v1/conversations/{cid}/messages/{message['id']}/speech"
+    result = client.post(url, headers=HEADERS)
+    assert result.status_code == 202
+    ids = result.json()["speech_job_ids"]
+    assert len(ids) > 8
+    assert ids[0] == result.json()["id"]
+    jobs = [wait_job(client, job_id) for job_id in ids]
+    assert all(job["status"] == "completed" for job in jobs)
+    assert "".join(job["text"] for job in jobs) == message["assistant_text"]
+    assert all(len(job["text"]) <= 120 for job in jobs)
+    assert client.post(url, headers=HEADERS).json()["speech_job_ids"] == ids
+    assert len(engine[1]) == len(ids)
 
 
 def test_chat_enqueues_speech_and_repeated_message_does_not_regenerate(client, engine):
@@ -604,7 +664,7 @@ def test_interrupted_running_job_is_not_blindly_replayed(client):
         assert job["status"] == "failed" and "中断" in job["error"]
 
 
-def test_long_chat_text_is_retained_without_silent_audio_truncation(client, engine):
+def test_long_chat_text_is_segmented_without_silent_audio_truncation(client, engine):
     voice = add_voice(client)
     cid = conversation(client, voice["id"])
     service = client.app.state.speech_service
@@ -623,9 +683,17 @@ def test_long_chat_text_is_retained_without_silent_audio_truncation(client, engi
         job = service.enqueue(
             db, db.get(Voice, voice["id"]), message.assistant_text, message=message
         )
-        assert job.status == "failed" and "600" in job.error
+        assert job.status in ("queued", "running", "completed")
         assert len(db.scalar(select(Message)).assistant_text) == 601
-    assert engine[1] == []
+        jobs = db.scalars(
+            select(SpeechJob).where(SpeechJob.message_id == message.id)
+            .order_by(SpeechJob.created_at, SpeechJob.id)
+        ).all()
+        ids = [item.id for item in jobs]
+        assert len(jobs) > 1
+        assert "".join(item.text for item in jobs) == message.assistant_text
+    assert all(wait_job(client, job_id)["status"] == "completed" for job_id in ids)
+    assert "".join(call[0] for call in engine[1]) == "长" * 601
 
 
 def test_sentence_chunks_preserve_text_with_a_bounded_size():

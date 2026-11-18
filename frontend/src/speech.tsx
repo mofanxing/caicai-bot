@@ -93,7 +93,7 @@ export function SpeechJobPlayer({ api, jobId, onFinished, onRetry, autoPlay = fa
   </div>;
 }
 
-export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = false, playbackMode = 'smooth' }: {
+export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = false, playbackMode = 'realtime' }: {
   api: Api; jobIds: string[]; autoPlay?: boolean; streaming?: boolean; playbackMode?: 'smooth' | 'realtime';
 }) {
   const [jobs, setJobs] = useState<Record<string, SpeechJob>>({});
@@ -102,6 +102,7 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
   const [playing, setPlaying] = useState(autoPlay);
   const [readyId, setReadyId] = useState('');
   const [buffering, setBuffering] = useState(true);
+  const [bufferExpired, setBufferExpired] = useState(false);
   const [preparedVersion, setPreparedVersion] = useState(0);
   const prepared = useRef(new Map<string, AudioBuffer>());
   const preparing = useRef(new Set<string>());
@@ -132,8 +133,15 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
     if (!buffer) break;
     readyDuration += buffer.duration; readyCount++;
   }
-  const enoughBuffer = playbackMode === 'realtime' || allSettled
-    || (!slowerThanPlayback && readyCount >= 2 && readyDuration >= 8);
+  const enoughBuffer = playbackMode === 'realtime' || allSettled || bufferExpired
+    || (readyCount >= 2 && readyDuration >= 8);
+  useEffect(() => {
+    setBufferExpired(false);
+    if (!playing || readyId !== currentId || !readyId || playbackMode !== 'smooth') return;
+    // Bound each buffering pause even when inference cannot keep up with speech.
+    const timer = setTimeout(() => setBufferExpired(true), 2500);
+    return () => clearTimeout(timer);
+  }, [currentId, readyId, playing, playbackMode]);
   useEffect(() => { setPlaying(autoPlay); }, [autoPlay]);
   useEffect(() => {
     const player = new SpeechPlayback(() => setIndex(value => value + 1));
@@ -222,8 +230,7 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
       else setPlaying(true);
     }}>{complete ? '重新朗读' : playing ? '暂停朗读' : '开始朗读'}</Button>
       <span>{complete ? '朗读完成' : job?.status === 'failed' ? '此段语音生成失败，文字已保留'
-        : playing && buffering && playbackMode === 'smooth' ? (slowerThanPlayback
-          ? '合成慢于播报，正在缓冲完整回复以减少断句…' : '正在预载后续语音，缓冲后连续朗读…')
+        : playing && buffering && playbackMode === 'smooth' ? '正在预载后续语音，首段就绪后最多额外缓冲 2.5 秒…'
         : job?.status === 'completed' ? `第 ${index + 1} 段 · ${playing ? '正在朗读' : '已就绪'}`
         : job?.status === 'running' ? '正在本机合成语音…' : '等待下一段语音…'}</span></div>
     {(error || job?.status === 'failed') && <div className="speech-error"><span>{error || job?.error}</span>
@@ -231,7 +238,8 @@ export function SpeechPlaylist({ api, jobIds, autoPlay = false, streaming = fals
       {job?.status === 'failed' && <Button size="small" onClick={() => setIndex(value => value + 1)}>跳过此段</Button>}</div>}
     {!!completedJobs.length && <small className="muted">本地生成 · 已完成 {completedJobs.length}/{jobIds.length} 段
       {' · 音频 ' + completedJobs.reduce((total, item) => total + (item.duration_seconds || 0), 0).toFixed(1) + ' 秒'}
-      {' · 合成耗时 ' + completedJobs.reduce((total, item) => total + (item.generation_seconds || 0), 0).toFixed(1) + ' 秒'}</small>}
+      {' · 合成耗时 ' + completedJobs.reduce((total, item) => total + (item.generation_seconds || 0), 0).toFixed(1) + ' 秒'}
+      {slowerThanPlayback && ' · 本机合成慢于播报，后续分段可能短暂等待'}</small>}
   </div>;
 }
 
@@ -241,6 +249,7 @@ export function MessageSpeech({ api, conversationId, messageId, initialJobId, jo
   playbackMode?: 'smooth' | 'realtime';
 }) {
   const [jobId, setJobId] = useState(initialJobId);
+  const [generatedIds, setGeneratedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [manualRead, setManualRead] = useState(false);
   const { message } = AntApp.useApp();
@@ -250,11 +259,14 @@ export function MessageSpeech({ api, conversationId, messageId, initialJobId, jo
     void prepareSpeechPlayback().catch(() => {}); stopSpeechPlayback();
     setManualRead(true);
     setLoading(true);
-    try { setJobId((await api.messageSpeech(conversationId, messageId)).id); }
+    try {
+      const result = await api.messageSpeech(conversationId, messageId);
+      setJobId(result.id); setGeneratedIds(result.speech_job_ids || [result.id]);
+    }
     catch (error) { message.error(errorText(error)); }
     finally { setLoading(false); }
   }
-  const ids = jobIds?.length ? jobIds : jobId ? [jobId] : [];
+  const ids = generatedIds.length ? generatedIds : jobIds?.length ? jobIds : jobId ? [jobId] : [];
   return ids.length ? <SpeechPlaylist api={api} jobIds={ids} autoPlay={autoPlay || manualRead} streaming={streaming} playbackMode={playbackMode} />
     : canGenerate ? <Button className="read-message" size="small" type="text" icon={<SoundOutlined />} loading={loading} onClick={generate}>用当前音色朗读</Button> : null;
 }
@@ -374,7 +386,7 @@ export function VoicesPage({ api, voices, onChanged }: {
       <Form name="voice-preview" form={previewForm} layout="vertical" requiredMark={false} initialValues={{ text: '你好呀，我是菜菜。今天也很高兴见到你，我们慢慢聊。', style_prompt: '' }} onFinish={preview}>
         <Form.Item label="试听音色"><Select value={selected || undefined} onChange={setSelected} disabled={previewing}
           placeholder="先添加一个音色" options={voices.map(voice => ({ value: voice.id, label: voice.name }))} /></Form.Item>
-        <Form.Item name="text" label="要说的话" rules={[{ required: true, whitespace: true, message: '请输入试听文字' }]}><Input.TextArea rows={4} maxLength={600} showCount disabled={previewing} /></Form.Item>
+        <Form.Item name="text" label="要说的话" rules={[{ required: true, whitespace: true, message: '请输入试听文字' }]}><Input.TextArea rows={4} showCount disabled={previewing} /></Form.Item>
         <Form.Item name="style_prompt" label="语音表达提示词"><Input.TextArea rows={3} maxLength={500} disabled={previewing || status?.supports_style_prompt === false} placeholder="语气跟随参考录音" /></Form.Item>
         {status?.supports_style_prompt !== false && <div className="voice-presets">{['温柔自然，语速稍慢', '开心活泼，语气轻快', '平静清晰，自然叙述'].map(value => <Button key={value} size="small" disabled={previewing} onClick={() => previewForm.setFieldValue('style_prompt', value)}>{value}</Button>)}</div>}
         <p className="muted compact">只朗读“要说的话”。当前复刻模式的语气以参考录音为准。</p>

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App as AntApp } from 'antd';
-import { SpeechJobPlayer, SpeechPlaylist, stopSpeechPlayback, VoicesPage } from './speech';
+import { MessageSpeech, SpeechJobPlayer, SpeechPlaylist, stopSpeechPlayback, VoicesPage } from './speech';
 import type { Api } from './api';
 import type { SpeechJob } from './types';
 import * as desktop from './desktop';
@@ -43,6 +43,28 @@ function apiMock() {
 }
 
 describe('sentence playback queue', () => {
+  it('starts the first ready segment by default while later synthesis is running', async () => {
+    const api = apiMock();
+    vi.mocked(api.speechJob).mockImplementation(async id => job(id, id === 'j1' ? 'completed' : 'running'));
+    render(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay streaming />);
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    expect(api.speechAudio).not.toHaveBeenCalledWith('j2');
+  });
+
+  it('plays every segment returned by manual long-message synthesis', async () => {
+    const api = Object.assign(apiMock(), {
+      messageSpeech: vi.fn().mockResolvedValue({ ...job('j1'), speech_job_ids: ['j1', 'j2', 'j3'] }),
+    });
+    render(<AntApp><MessageSpeech api={api} conversationId="c1" messageId="m1" initialJobId={null} canGenerate /></AntApp>);
+    fireEvent.click(screen.getByRole('button', { name: /用当前音色朗读/ }));
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    act(() => players[0].onEnded());
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+    act(() => players[0].onEnded());
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(3));
+    expect(api.messageSpeech).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps prefetched text off the current segment and loads each transcript with its own audio', async () => {
     const api = apiMock();
     vi.mocked(api.speechJob).mockImplementation(async id => ({ ...job(id), text: id === 'j1' ? '第一段。' : '第二段。' }));
@@ -61,7 +83,7 @@ describe('sentence playback queue', () => {
     try {
       const api = apiMock(); let status: SpeechJob['status'] = 'running';
       vi.mocked(api.speechJob).mockImplementation(async id => job(id, status));
-      const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming />);
+      const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming playbackMode="smooth" />);
       await waitFor(() => expect(api.speechJob).toHaveBeenCalled());
       status = 'completed';
       await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j1'), { timeout: 2000 });
@@ -72,10 +94,10 @@ describe('sentence playback queue', () => {
 
   it('buffers the short opening and preloads the next sentence before starting smooth playback', async () => {
     const api = apiMock();
-    const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming />);
+    const view = render(<SpeechPlaylist api={api} jobIds={['j1']} autoPlay streaming playbackMode="smooth" />);
     await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j1'));
     expect(play).not.toHaveBeenCalled();
-    view.rerender(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay streaming />);
+    view.rerender(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay streaming playbackMode="smooth" />);
     await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
     expect(api.speechAudio).toHaveBeenCalledWith('j2');
     const calls = vi.mocked(api.speechAudio).mock.calls.length;
@@ -84,16 +106,15 @@ describe('sentence playback queue', () => {
     expect(api.speechAudio).toHaveBeenCalledTimes(calls);
   });
 
-  it('waits for complete generation when synthesis is slower than speaking', async () => {
+  it('bounds smooth buffering even when synthesis is slower and later jobs are pending', async () => {
     const api = apiMock();
     vi.mocked(api.speechJob).mockImplementation(async id => ({ ...job(id),
-      duration_seconds: 2, generation_seconds: 4 }));
-    const view = render(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay streaming />);
-    await screen.findByText('合成慢于播报，正在缓冲完整回复以减少断句…');
-    await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j2'));
+      status: id === 'j2' ? 'running' : 'completed', duration_seconds: 2, generation_seconds: 4 }));
+    render(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay streaming playbackMode="smooth" />);
+    await waitFor(() => expect(api.speechAudio).toHaveBeenCalledWith('j1'));
     expect(play).not.toHaveBeenCalled();
-    view.rerender(<SpeechPlaylist api={api} jobIds={['j1', 'j2']} autoPlay />);
-    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1), { timeout: 3500 });
+    expect(api.speechAudio).not.toHaveBeenCalledWith('j2');
   });
 
   it('does not restart the current sentence when the next audio is decoded', async () => {

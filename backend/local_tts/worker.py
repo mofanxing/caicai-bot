@@ -134,8 +134,6 @@ def synthesize_request(model, request, mx, np, sf):
         sample_rate = rate
         part = match_speech_level(result.audio, sample_rate, np)
         duration += len(part) / sample_rate
-        if duration > 240:
-            raise ValueError("Audio duration limit exceeded")
         audio.append(part)
         if anchor is None and len(part) / sample_rate <= 30:
             # VoxCPM2 expects array input at its output sample rate. Its encoder
