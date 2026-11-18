@@ -23,4 +23,7 @@ def client(tmp_path):
         provider_encryption_key=Fernet.generate_key().decode(),
     )
     with TestClient(create_app(settings)) as test_client:
+        # Tests drive milestone ticks explicitly rather than racing a wall-clock poll.
+        test_client.app.state.task_milestones.close()
+        test_client.app.state.task_milestones.stopping.clear()
         yield test_client

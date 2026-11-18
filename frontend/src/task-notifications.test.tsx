@@ -87,3 +87,17 @@ it('recovers silently from network and decoding errors without deleting unplayed
   mock.loadFailure = false; await tick(); expect(mock.players[1].play).toHaveBeenCalledTimes(1);
   expect(api.consumeTaskNotification).not.toHaveBeenCalled(); expect(view.container.innerHTML).toBe('');
 });
+
+it('discards obsolete progress after pausing and plays the completion notification', async () => {
+  const api = fixture();
+  const view = render(<TaskNotifications api={api as unknown as Api} autoRead busy={false} />);
+  await act(async () => {});
+  view.rerender(<TaskNotifications api={api as unknown as Api} autoRead busy />);
+  api.taskNotifications.mockResolvedValue([{ ...job, id: 'completed' }]);
+  view.rerender(<TaskNotifications api={api as unknown as Api} autoRead busy={false} />);
+  await tick();
+  expect(mock.players[0].dispose).toHaveBeenCalled();
+  expect(api.speechAudio).toHaveBeenLastCalledWith('completed', expect.any(AbortSignal));
+  expect(mock.players[1].play).toHaveBeenCalledTimes(1);
+  expect(api.consumeTaskNotification).not.toHaveBeenCalled();
+});

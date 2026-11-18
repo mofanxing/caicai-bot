@@ -3,14 +3,17 @@ import logging
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timezone
 from pathlib import Path
 
 from sqlalchemy import or_, select, update
 
 from app.core.errors import ServiceError
 from app.integrations.local_speech import LocalSpeechEngine
-from app.models import Conversation, Message, SpeechJob, Voice, new_id
+from app.models import Conversation, Message, SpeechJob, Task, TaskEvent, Voice, new_id, utc_now
 from app.services.speech_text import speech_boundary
+from app.tasks.milestones import MAX_AGE
+from app.tasks.milestones import PURPOSE as MILESTONE_PURPOSE
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running")
@@ -254,6 +257,34 @@ class SpeechService:
                 job = db.get(SpeechJob, job_id)
                 if self.closing or not job or job.status != "queued":
                     return
+                if job.purpose == MILESTONE_PURPOSE:
+                    live = db.scalar(
+                        select(Task.id)
+                        .join(TaskEvent, TaskEvent.task_id == Task.id)
+                        .where(
+                            Task.status == "running",
+                            TaskEvent.payload["speech_job_id"].as_string() == job.id,
+                        )
+                        .limit(1)
+                    )
+                    if (
+                        not live
+                        or job.created_at.replace(tzinfo=timezone.utc) < utc_now() - MAX_AGE
+                    ):
+                        db.delete(job)
+                        db.commit()
+                        return
+                    if db.scalar(
+                        select(SpeechJob.id)
+                        .where(
+                            SpeechJob.status == "queued",
+                            SpeechJob.purpose == "speech",
+                            SpeechJob.message_id.is_not(None),
+                        )
+                        .limit(1)
+                    ):
+                        self.executor.submit(self._run, job.id)
+                        return
                 if job.purpose == "feedback" and db.scalar(
                     select(SpeechJob.id)
                     .where(SpeechJob.status == "queued", SpeechJob.purpose != "feedback")

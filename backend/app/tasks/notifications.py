@@ -4,15 +4,18 @@ import logging
 import threading
 from datetime import timedelta
 
-from sqlalchemy import exists, select
+from sqlalchemy import and_, exists, or_, select
 
 from app.core.errors import ServiceError
 from app.models import Conversation, Message, SpeechJob, Task, TaskEvent, Voice, new_id, utc_now
 from app.tasks.contracts import TERMINAL
+from app.tasks.milestones import MAX_AGE
+from app.tasks.milestones import PURPOSE as MILESTONE_PURPOSE
 from app.tasks.process import safe_text
 
 logger = logging.getLogger(__name__)
 PURPOSE = "task_notification"
+PURPOSES = {PURPOSE, MILESTONE_PURPOSE}
 
 
 class TaskNotifications:
@@ -104,10 +107,22 @@ class TaskNotifications:
             self.speech.executor.submit(self.speech._run, job_id)
 
     def pending(self, db):
+        live_milestones = (
+            select(TaskEvent.payload["speech_job_id"].as_string())
+            .join(Task, Task.id == TaskEvent.task_id)
+            .where(Task.status == "running", TaskEvent.payload["automatic"].as_boolean().is_(True))
+        )
         return db.scalars(
             select(SpeechJob)
             .where(
-                SpeechJob.purpose == PURPOSE,
+                or_(
+                    SpeechJob.purpose == PURPOSE,
+                    and_(
+                        SpeechJob.purpose == MILESTONE_PURPOSE,
+                        SpeechJob.id.in_(live_milestones),
+                        SpeechJob.created_at >= utc_now() - MAX_AGE,
+                    ),
+                ),
                 SpeechJob.status.in_({"queued", "running", "completed"}),
                 SpeechJob.created_at >= utc_now() - timedelta(days=5),
             )
@@ -118,7 +133,7 @@ class TaskNotifications:
         with self.speech.guard, self.service.session_factory.begin() as db:
             job = db.get(SpeechJob, job_id)
             if job:
-                if job.purpose != PURPOSE:
+                if job.purpose not in PURPOSES:
                     raise ServiceError("notification_not_found", "完成通知不存在", 404)
                 if job.status in {"queued", "running"}:
                     raise ServiceError("speech_busy", "完成语音仍在生成", 409)
@@ -133,9 +148,14 @@ class TaskNotifications:
         with self.speech.guard, self.service.session_factory.begin() as db:
             jobs = db.scalars(
                 select(SpeechJob).where(
-                    SpeechJob.purpose == PURPOSE,
+                    SpeechJob.purpose.in_(PURPOSES),
                     ~SpeechJob.status.in_({"queued", "running"}),
-                    (SpeechJob.created_at < cutoff) | (SpeechJob.status == "failed"),
+                    (SpeechJob.created_at < cutoff)
+                    | (SpeechJob.status == "failed")
+                    | (
+                        (SpeechJob.purpose == MILESTONE_PURPOSE)
+                        & (SpeechJob.created_at < utc_now() - MAX_AGE)
+                    ),
                 )
             ).all()
             for job in jobs:

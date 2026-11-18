@@ -7,7 +7,7 @@ import { subscribeDesktopState } from './desktop';
 const STORAGE = 'caicai.task-notifications.played';
 const SOURCE = 'caicai-task-notification';
 
-// Completion audio has no chat message, toast, playlist or replay controls.
+// Task audio has no chat message, toast, playlist or replay controls.
 export function TaskNotifications({ api, autoRead, busy }: {
   api: Api; autoRead: boolean; busy: boolean;
 }) {
@@ -55,11 +55,13 @@ export function TaskNotifications({ api, autoRead, busy }: {
       try {
         await cleanupPlayed();
         if (abort.signal.aborted || playing || !enabled.current || otherSpeaking) return;
-        if (!current) {
-          const jobs = await api.taskNotifications();
-          if (abort.signal.aborted) return;
-          current = jobs.find(job => !played.has(job.id));
+        const jobs = await api.taskNotifications();
+        if (abort.signal.aborted) return;
+        // Progress can expire or become obsolete when the task finishes while paused.
+        if (current && !jobs.some(job => job.id === current?.id)) {
+          player?.dispose(); player = undefined; current = undefined;
         }
+        if (!current) current = jobs.find(job => !played.has(job.id));
         if (!current) return;
         const job = await api.speechJob(current.id, abort.signal);
         if (abort.signal.aborted) return;

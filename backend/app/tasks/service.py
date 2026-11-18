@@ -78,7 +78,7 @@ class TaskService:
                         "正在执行：" if payload["kind"] == "tool_call" else "工具已返回："
                     ) + str(payload.get("command") or payload.get("tool") or "工具调用")[:200]
                     break
-                if payload.get("kind") == "agent_message":
+                if payload.get("kind") in {"agent_message", "caicai_report"}:
                     step = str(payload.get("message", ""))[:200]
                     break
         return TaskRead.model_validate(task).model_copy(update={"current_step": step})

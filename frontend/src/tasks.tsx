@@ -100,7 +100,7 @@ export function TaskInspector({ api, id, onClose }: { api: Api; id: string; onCl
         catch (e) { message.error(errorText(e)); }
         finally { setReporting(false); }
       }}>让菜菜汇报</Button>
-      <p className="muted">按需使用关联会话的聊天模型整理增量证据；无新进展时复用已保存汇报。</p>
+      <p className="muted">关键节点自动汇报，每类节点最多一次、至少间隔30秒；语音遵循自动朗读开关。也可手动整理最新证据。</p>
       {(report || [...events].reverse().find(e => e.payload.kind === 'caicai_report')) && <pre className="task-output">{report || text([...events].reverse().find(e => e.payload.kind === 'caicai_report')?.payload.message)}</pre>}
       <h4>执行器结果</h4><pre className="task-output">{task.result || '执行器尚未交付结果。'}</pre>
       <h4>检测到的文件改动</h4>
