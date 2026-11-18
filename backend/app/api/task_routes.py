@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from app.api.routes import get_db, require_admin
 from app.models import Task, TaskArtifact, TaskAttempt, TaskEvent, TaskProject
+from app.schemas import SpeechJobRead
 from app.tasks.contracts import (
     ArtifactRead,
     AttemptRead,
@@ -16,6 +17,16 @@ from app.tasks.contracts import (
 )
 
 task_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_admin)])
+
+
+@task_router.get("/task-notifications", response_model=list[SpeechJobRead])
+def task_notifications(request: Request, db=Depends(get_db)):
+    return request.app.state.task_notifications.pending(db)
+
+
+@task_router.delete("/task-notifications/{job_id}")
+def consume_task_notification(job_id: str, request: Request):
+    return request.app.state.task_notifications.consume(job_id)
 
 
 @task_router.get("/task-runtime")
@@ -35,12 +46,21 @@ def update_plugin(plugin_id: str, payload: PluginUpdate, request: Request):
 
 @task_router.get("/projects", response_model=list[ProjectRead])
 def projects(db=Depends(get_db)):
-    return db.scalars(select(TaskProject).order_by(TaskProject.created_at, TaskProject.id)).all()
+    return db.scalars(
+        select(TaskProject)
+        .where(TaskProject.registered.is_(True))
+        .order_by(TaskProject.created_at, TaskProject.id)
+    ).all()
 
 
 @task_router.post("/projects", response_model=ProjectRead, status_code=201)
 def create_project(payload: ProjectCreate, request: Request):
     return request.app.state.task_service.register_project(payload)
+
+
+@task_router.delete("/projects/{project_id}")
+def delete_project(project_id: str, request: Request):
+    return request.app.state.task_service.unregister_project(project_id)
 
 
 @task_router.post("/tasks", response_model=TaskRead, status_code=201)
@@ -55,6 +75,7 @@ def tasks(
     limit: int = Query(50, ge=1, le=200),
     db=Depends(get_db),
 ):
+    request.app.state.task_service.prune_history()
     query = select(Task)
     if conversation_id:
         query = query.where(Task.conversation_id == conversation_id)

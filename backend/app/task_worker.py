@@ -33,6 +33,7 @@ class TaskWorker:
                     self.stopping.wait(self.service.settings.task_poll_seconds)
 
     def run_once(self):
+        self.service.prune_history()
         claimed = self.service.claim()
         if not claimed:
             return False

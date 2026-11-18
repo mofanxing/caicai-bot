@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import { createApi, type Api } from './api';
 import { TaskCards, TaskComposer, TasksPage } from './tasks';
+import { TaskNotifications } from './task-notifications';
 import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate, VoiceProfile, SpeechFeedback } from './types';
 import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
 import { chatChannel, desktopHeaders, isDesktop, reportDesktopState } from './desktop';
@@ -677,7 +678,7 @@ export default function App() {
               <button key={text} onClick={() => setDraft(text)}>{text}<ArrowRightOutlined /></button>)}</div>
               : <Button type="primary" icon={<PlusOutlined />} onClick={() => { setNewChatName('我的第一个会话'); setNewChatOpen(true); }}>创建第一个会话</Button>}
           </div>}
-          {history.map(turn => <div className="chat-turn" key={turn.id}><div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{turn.user_text}</div></div><Avatar>我</Avatar></div>
+          {history.map(turn => <div className="chat-turn" key={turn.id}>{turn.user_text && <div className="message-row user"><div className="message-content"><span>我</span><div className="bubble">{turn.user_text}</div></div><Avatar>我</Avatar></div>}
             {turn.assistant_text && <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="message-content"><span>菜菜</span><div className="bubble">{turn.assistant_text}</div>
               <MessageSpeech api={api} conversationId={activeId} messageId={turn.id} initialJobId={turn.speech_job_id || null}
                 jobIds={turn.speech_job_ids} autoPlay={autoRead && autoReadMessage === turn.id && page === 'chat'}
@@ -692,7 +693,7 @@ export default function App() {
         </>}
         {activeId && <TaskCards key={activeId} api={api} conversationId={activeId} refreshKey={taskRevision} />}
       </div><div className="composer"><Input.TextArea aria-label="聊天内容" value={draft} onChange={event => setDraft(event.target.value)}
-        disabled={!active || busy} placeholder={active ? '和菜菜聊点什么…' : '创建会话后开始聊天'} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={16000}
+        disabled={!active || busy} placeholder={active ? '和菜菜聊天，或直接说：帮我修复 XX 项目的登录问题并运行测试…' : '创建会话后开始聊天'} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={16000}
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
         <div className="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><Button className="chat-task-entry" disabled={!active || busy} onClick={() => setTaskComposerOpen(true)}>交给菜菜执行</Button><Button data-chat-send type="primary" icon={<SendOutlined />} loading={sending}
           disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div></div>
@@ -729,7 +730,7 @@ export default function App() {
       <div className="capability-row"><span>微信 / 语音识别</span><Tag>待接入</Tag></div>
       <p className="muted">令牌和 API Key 不会写入前端源码。后端环境文件不要提交到 Git。</p></Card></div>}
     <footer className="workspace-footer"><span>CAICAI BOT</span><span>一点智能，一点陪伴。</span></footer>
-  </main><TaskComposer api={api} conversations={debugConversations} conversationId={activeId || undefined}
+  </main><TaskNotifications api={api} autoRead={autoRead} busy={busy} /><TaskComposer api={api} conversations={debugConversations} conversationId={activeId || undefined}
     draft={draft} open={taskComposerOpen} onClose={() => setTaskComposerOpen(false)}
     onCreated={() => { setTaskComposerOpen(false); setDraft(''); setTaskRevision(v => v + 1); message.success('任务已排队，可在任务卡片中查看进度'); }} />
   <Modal title={'新建' + CONVERSATION_LABEL} open={newChatOpen} confirmLoading={creating} okText="创建会话"

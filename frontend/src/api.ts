@@ -112,6 +112,11 @@ export const createApi = (token: string) => ({
   taskPlugins: () => request<TaskPlugin[]>(token, '/plugins'),
   enableTaskPlugin: (id: string, enabled: boolean) => request<{ id: string; enabled: boolean }>(
     token, '/plugins/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  taskNotifications: () => request<SpeechJob[]>(token, '/task-notifications'),
+  consumeTaskNotification: (id: string) => request<{ deleted: boolean }>(token,
+    '/task-notifications/' + encodeURIComponent(id), { method: 'DELETE' }),
+  deleteTaskProject: (id: string) => request<{ deleted: boolean }>(token,
+    '/projects/' + encodeURIComponent(id), { method: 'DELETE' }),
   taskProjects: () => request<TaskProject[]>(token, '/projects'),
   addTaskProject: (name: string, root: string) => request<TaskProject>(token, '/projects', {
     method: 'POST', body: JSON.stringify({ name, root }) }),

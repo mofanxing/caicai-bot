@@ -21,6 +21,7 @@ class ChatService:
         self.llm = OpenAICompatibleClient(settings.llm_timeout_seconds, vault)
         self.wechat = PersonalWechatBridge(settings)
         self.speech = speech
+        self.task_intents = None
         self._locks = {}
         self._locks_guard = Lock()
         self._provider_locks = {}
@@ -109,22 +110,36 @@ class ChatService:
                         .where(
                             Message.conversation_id == conversation.id,
                             Message.status.in_(["completed", "sent"]),
+                            ~Message.external_id.startswith("task-report:"),
                         )
                         .order_by(Message.created_at.desc(), Message.id.desc())
                         .limit(10)
                     ).all()
                 )
             )
-            messages = [{"role": "system", "content": conversation.system_prompt}]
-            for turn in history:
-                messages.extend(
-                    [
-                        {"role": "user", "content": turn.user_text},
-                        {"role": "assistant", "content": turn.assistant_text},
-                    ]
+            system_prompt = conversation.system_prompt
+            if self.task_intents and conversation.channel in {"desktop", "debug"}:
+                system_prompt += (
+                    "\n你可以通过任务中心执行已登记项目的后台任务。"
+                    "只有系统返回真实任务编号才代表已创建，不要自行声称已经执行、修改文件或创建任务。"
+                    "没有登记项目时，引导用户在任务中心先登记项目；询问能力时说明可直接用自然语言下达任务。"
                 )
+            messages = [{"role": "system", "content": system_prompt}]
+            for turn in history:
+                if turn.user_text:
+                    messages.append({"role": "user", "content": turn.user_text})
+                messages.append({"role": "assistant", "content": turn.assistant_text})
             messages.append({"role": "user", "content": incoming.text})
-            if on_event:
+            task_reply = (
+                self.task_intents.respond(db, conversation, message, history)
+                if self.task_intents
+                else None
+            )
+            if task_reply is not None:
+                message.assistant_text = task_reply
+                if on_event:
+                    on_event({"type": "delta", "text": task_reply})
+            elif on_event:
                 provider = (
                     db.get(Provider, conversation.provider_id) if conversation.provider_id else None
                 )
@@ -208,17 +223,23 @@ class ChatService:
                 )
                 message.status = "sent"
                 db.commit()
-            if not on_event and conversation.reply_mode != "text" and self.speech:
+            if (
+                (not on_event or task_reply is not None)
+                and conversation.reply_mode != "text"
+                and self.speech
+            ):
                 with self.speech.guard:
                     voice = db.get(Voice, conversation.voice_id)
                     if voice:
-                        self.speech.enqueue(
+                        job = self.speech.enqueue(
                             db,
                             voice,
-                            message.assistant_text,
+                            message.assistant_text[:600] if on_event else message.assistant_text,
                             style_prompt=conversation.voice_prompt or None,
                             message=message,
                         )
+                        if on_event:
+                            on_event({"type": "speech", "job_id": job.id})
             return message
         except Exception:
             message.status = "delivery_unknown" if message.status == "sending" else "failed"

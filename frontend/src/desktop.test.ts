@@ -73,3 +73,15 @@ it('等待提示的实际出声联动动画，但不会反过来把提示当作�
     { thinking: true, speaking: false, waiting: false },
   ]); unsubscribe();
 });
+
+it('原生文件夹选择通过桌面鉴权请求返回绝对路径，并允许取消', async () => {
+  history.replaceState(null, '', '/chat/#token=pet-capability'); vi.resetModules();
+  const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ root: '/Users/demo/我的项目' })))
+    .mockResolvedValueOnce(new Response('{"root":null}'));
+  vi.stubGlobal('fetch', fetchMock);
+  const { selectProjectDirectory } = await import('./desktop');
+  await expect(selectProjectDirectory()).resolves.toBe('/Users/demo/我的项目');
+  await expect(selectProjectDirectory()).resolves.toBeNull();
+  expect(fetchMock.mock.calls[0][0]).toBe('/caicai/pick-directory');
+  expect(fetchMock.mock.calls[0][1]).toEqual({ method: 'POST', headers: { 'X-DSH-Pet-Token': 'pet-capability' } });
+});

@@ -58,6 +58,7 @@ test('任务接口允许已定义方法与分页参数，并拒绝其他查询�
   for (const [path, method] of [
     ['/api/v1/plugins', 'GET'], ['/api/v1/plugins/caicai.deepseek', 'PUT'],
     ['/api/v1/projects', 'POST'], ['/api/v1/task-runtime', 'GET'],
+    ['/api/v1/projects/p1', 'DELETE'], ['/api/v1/task-notifications', 'GET'], ['/api/v1/task-notifications/j1', 'DELETE'],
     ['/api/v1/tasks', 'POST'], ['/api/v1/tasks?conversation_id=c1&limit=50', 'GET'],
     ['/api/v1/tasks/t1/events?after=500&limit=500', 'GET'], ['/api/v1/tasks/t1', 'GET'],
     ['/api/v1/tasks/t1/cancel', 'POST'], ['/api/v1/tasks/t1/report', 'POST'],
@@ -66,7 +67,9 @@ test('任务接口允许已定义方法与分页参数，并拒绝其他查询�
   for (const [path, method] of [
     ['/api/v1/tasks?target=http://evil', 'GET'], ['/api/v1/tasks/t1/events?after=1&after=2', 'GET'],
     ['/api/v1/tasks/t1/cancel?target=x', 'POST'], ['/api/v1/tasks?limit=50', 'POST'],
-    ['/api/v1/plugins/../tasks', 'PUT'], ['/api/v1/projects/p1', 'DELETE'],
+    ['/api/v1/plugins/../tasks', 'PUT'], ['/api/v1/projects/p1', 'PUT'],
+    ['/api/v1/task-notifications?target=x', 'GET'], ['/api/v1/task-notifications', 'POST'],
+    ['/api/v1/task-notifications/j1', 'POST'], ['/api/v1/task-notifications/j1?target=x', 'DELETE'],
   ]) assert.equal(allowedBackendPath(path, method), false, method + ' ' + path);
 });
 

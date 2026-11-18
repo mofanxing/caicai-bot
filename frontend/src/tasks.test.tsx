@@ -3,7 +3,10 @@ import { App } from 'antd';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Api } from './api';
 import type { TaskRecord } from './types';
-import { TaskCards, TaskComposer, TaskInspector } from './tasks';
+import { TaskCards, TaskComposer, TaskInspector, TasksPage } from './tasks';
+
+vi.mock('./desktop', () => ({ isDesktop: true, selectProjectDirectory: vi.fn() }));
+import { selectProjectDirectory } from './desktop';
 
 beforeEach(() => {
   const computed = window.getComputedStyle;
@@ -52,7 +55,7 @@ it('cancels a running task and keeps persisted execution details available', asy
 });
 
 it('filters task cards to the current conversation and displays fetch failures', async () => {
-  const tasks = vi.fn().mockResolvedValueOnce([task]).mockRejectedValue(new Error('连接中断'));
+  const tasks = vi.fn().mockResolvedValueOnce([{ ...task, status: 'running' }]).mockRejectedValue(new Error('连接中断'));
   const api = { tasks } as unknown as Api;
   const view = render(<App><TaskCards api={api} conversationId="c1" /></App>);
   expect(await screen.findByText('修复测试')).toBeTruthy();
@@ -71,4 +74,45 @@ it('preserves the task goal and blocks submission when the executor is not ready
   expect((screen.getByRole('textbox', { name: '任务目标与验收条件' }) as HTMLTextAreaElement).value).toBe('检查当前项目测试');
   expect((screen.getByRole('button', { name: '创建后台任务' }) as HTMLButtonElement).disabled).toBe(true);
   expect(createTask).not.toHaveBeenCalled();
+});
+
+it('selects a native directory, fills its name, and preserves the chosen path on cancel', async () => {
+  vi.mocked(selectProjectDirectory).mockResolvedValueOnce('/Users/demo/我的项目').mockResolvedValueOnce(null);
+  const addTaskProject = vi.fn(async () => ({}));
+  const api = { taskPlugins: vi.fn(async () => []), taskProjects: vi.fn(async () => []),
+    taskRuntime: vi.fn(async () => ({ mode: 'managed', state: 'running' })),
+    tasks: vi.fn(async () => []), addTaskProject } as unknown as Api;
+  render(<App><TasksPage api={api} conversations={[]} /></App>);
+  fireEvent.click(await screen.findByRole('button', { name: /选择文件夹/ }));
+  await waitFor(() => expect((screen.getByRole('textbox', { name: '项目绝对目录' }) as HTMLInputElement).value).toBe('/Users/demo/我的项目'));
+  fireEvent.click(screen.getByRole('button', { name: /选择文件夹/ }));
+  await waitFor(() => expect(vi.mocked(selectProjectDirectory)).toHaveBeenCalledTimes(2));
+  expect((screen.getByRole('textbox', { name: '项目绝对目录' }) as HTMLInputElement).value).toBe('/Users/demo/我的项目');
+  fireEvent.click(screen.getByRole('button', { name: '登记项目' }));
+  await waitFor(() => expect(addTaskProject).toHaveBeenCalledWith('我的项目', '/Users/demo/我的项目'));
+}, 15000);
+
+it('confirms project removal and refreshes registrations without clearing task history', async () => {
+  let projects = [{ id: 'p1', name: '测试项目', root: '/project' }];
+  const deleteTaskProject = vi.fn(async () => { projects = []; return { deleted: true }; });
+  const api = { taskPlugins: vi.fn(async () => []), taskProjects: vi.fn(async () => projects),
+    taskRuntime: vi.fn(async () => ({ mode: 'managed', state: 'running' })),
+    tasks: vi.fn(async () => [task]), deleteTaskProject } as unknown as Api;
+  render(<App><TasksPage api={api} conversations={[]} /></App>);
+  fireEvent.click(await screen.findByRole('button', { name: '删除项目测试项目' }));
+  expect(deleteTaskProject).not.toHaveBeenCalled();
+  expect(await screen.findByText(/只移除任务中心的登记，不删除磁盘文件/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /删除登记/ }));
+  await waitFor(() => expect(deleteTaskProject).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(screen.queryByRole('button', { name: '删除项目测试项目' })).toBeNull());
+  expect(screen.getByText('修复测试')).toBeTruthy();
+}, 15000);
+
+it('hides ended tasks only in chat while retaining them in the task center', async () => {
+  const api = { tasks: vi.fn(async () => [task, { ...task, id: 'live', goal: '进行中的任务', status: 'running' }]) } as unknown as Api;
+  const view = render(<App><TaskCards api={api} conversationId="c1" /></App>);
+  expect(await screen.findByText('进行中的任务')).toBeTruthy();
+  expect(screen.queryByText('修复测试')).toBeNull();
+  view.rerender(<App><TaskCards api={api} /></App>);
+  expect(await screen.findByText('修复测试')).toBeTruthy();
 });

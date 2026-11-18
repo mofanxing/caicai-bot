@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Opt-in integration check against an isolated FastAPI backend. No production credentials.
-export async function checkDesktopChat({ showChat, origin, token, data, chatPhases }) {
+export async function checkDesktopChat({ showChat, origin, token, data, chatPhases, dialog }) {
   const window = showChat(false); window.webContents.setAudioMuted(true);
   const errors = [];
   window.webContents.on('console-message', (_event, level, message) => {
@@ -15,7 +15,7 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
       if (await evaluate(script)) return;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    throw new Error('等待聊天页面超时：' + script.slice(0, 100));
+    throw new Error('等待聊天页面超时：' + script.slice(0, 100) + '\n界面：' + await evaluate("document.body.innerText.slice(-2500)"));
   };
   await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
   await wait("document.querySelector('input[type=password]') !== null");
@@ -53,9 +53,12 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   await new Promise(resolve => setTimeout(resolve, 200));
   await evaluate(`{
     window.__caicaiPlaybackDurations = [];
+    window.__caicaiPlaybackEnded = [];
     const original = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function(...args) {
       window.__caicaiPlaybackDurations.push(this.buffer?.duration || 0);
+      const duration = this.buffer?.duration || 0;
+      this.addEventListener("ended", () => window.__caicaiPlaybackEnded.push(duration));
       return original.apply(this, args);
     };
     void 0;
@@ -131,11 +134,68 @@ export async function checkDesktopChat({ showChat, origin, token, data, chatPhas
   await new Promise(resolve => setTimeout(resolve, 200));
   const tasksPicture = await window.webContents.capturePage();
   writeFileSync(join(data, 'tasks-smoke.png'), tasksPicture.toPNG());
+  const projects = await (await fetch(origin + '/api/v1/projects', { headers })).json();
+  assert.ok(projects.length === 1);
+  const originalPicker = dialog.showOpenDialog;
+  try {
+    let picked = false;
+    dialog.showOpenDialog = async (...args) => {
+      assert.ok(args.at(-1).properties.includes('openDirectory'));
+      picked = true;
+      return { canceled: false, filePaths: [projects[0].root] };
+    };
+    await evaluate("[...document.querySelectorAll('.tasks-page button')].find(b => b.textContent.includes('选择文件夹')).click()");
+    await wait("document.querySelector('input[aria-label=项目绝对目录]')?.value.length > 0");
+    assert.ok(picked);
+    assert.equal(await evaluate("document.querySelector('input[aria-label=项目绝对目录]').value"), projects[0].root);
+    dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
+    const cancelled = await (await fetch(origin + '/caicai/pick-directory', { method: 'POST', headers })).json();
+    assert.equal(cancelled.root, null);
+  } finally { dialog.showOpenDialog = originalPicker; }
+  assert.equal((await fetch(origin + '/caicai/pick-directory', { method: 'POST' })).status, 403);
+  await evaluate("document.querySelector('[aria-label=和菜菜聊天]').click()");
+  await wait("document.querySelector('textarea[aria-label=聊天内容]') !== null");
+  await evaluate("{ const input = document.querySelector('textarea[aria-label=聊天内容]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '自动任务验收：检查当前项目并汇报结果'); input.dispatchEvent(new Event('input', { bubbles: true })); }");
+  await wait("document.querySelector('.composer [data-chat-send]')?.disabled === false");
+  await evaluate("document.querySelector('.composer [data-chat-send]').click()");
+  await wait("document.querySelector('.chat-messages')?.textContent.includes('创建后台任务') === true");
+  window.close();
+  let notification;
+  for (let i = 0; i < 200; i++) {
+    const jobs = await (await fetch(origin + '/api/v1/task-notifications', { headers })).json();
+    notification = jobs.find(job => job.text.startsWith('你的任务「'));
+    if (notification) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(notification, '完成通知必须生成独立语音任务');
+  assert.equal(notification.message_id, null);
+  await wait("window.__caicaiPlaybackEnded.some(d => Math.abs(d - 1.1) < 0.01)");
+  for (let i = 0; i < 100; i++) {
+    if ((await fetch(origin + '/api/v1/speech/jobs/' + notification.id, { headers })).status === 404) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal((await fetch(origin + '/api/v1/speech/jobs/' + notification.id, { headers })).status, 404);
+  assert.equal((await fetch(origin + '/api/v1/speech/jobs/' + notification.id + '/audio', { headers })).status, 404);
+  assert.equal((await (await fetch(origin + '/api/v1/task-notifications', { headers })).json()).length, 0);
+  assert.equal(await evaluate("window.__caicaiPlaybackDurations.filter(d => Math.abs(d - 1.1) < 0.01).length"), 1);
+  assert.equal(await evaluate("document.querySelector('[aria-label=菜菜主动汇报]') === null"), true);
+  const finalHistory = await (await fetch(origin + '/api/v1/conversations/' + conversation.id + '/messages', { headers })).json();
+  assert.equal(finalHistory.length, 2);
+  assert.equal(finalHistory.some(turn => turn.external_id.startsWith('task-report:')), false);
+  assert.equal(await evaluate("[...document.querySelectorAll('.message-row.user .bubble')].some(b => !b.textContent.trim())"), false);
+  await wait("document.querySelector('.chat-messages .task-cards .ant-card') === null");
+  writeFileSync(join(data, 'task-report-smoke.png'), (await window.webContents.capturePage()).toPNG());
+  const deleteResponse = await fetch(origin + '/api/v1/projects/' + projects[0].id, { method: 'DELETE', headers });
+  assert.equal(deleteResponse.status, 200);
+  assert.equal((await (await fetch(origin + '/api/v1/projects', { headers })).json()).length, 0);
+  const tasksAfterDelete = await (await fetch(origin + '/api/v1/tasks', { headers })).json();
+  assert.equal(tasksAfterDelete.length, 1); assert.equal(tasksAfterDelete[0].status, 'succeeded');
   assert.deepEqual(errors, []);
   const result = { passed: true, channel: conversation.channel, messages: history.length, speechSegments: history[0].speech_job_ids.length,
     phases: [...chatPhases], animationPlayback: receipt.status, closeHidesWindow: true, rendererErrors: errors.length,
     nativeBubbleSegments: segments.length,
-    configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true, taskCenterVisible: true };
+    configuredVoiceFeedbackClips: feedbackClips.length, manualRegenerationDeletesPrevious: true, taskCenterVisible: true, nativeDirectoryPicker: true, projectUnregister: true,
+    naturalLanguageTask: true, completionAudioOnly: true, completionAudioDeleted: true, noCompletionControls: true, completionVoiceWhileHidden: true };
   writeFileSync(join(data, 'chat-smoke.json'), JSON.stringify(result, null, 2));
   console.log('[caicai-chat-check] ' + JSON.stringify(result));
 }

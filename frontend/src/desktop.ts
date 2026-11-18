@@ -36,7 +36,6 @@ export function reportSpeechWaiting(id: string, active: boolean) {
   reportDesktopState({ waiting: waitingPlayers.size > 0 });
 }
 export function reportDesktopState(state: { thinking?: boolean; speaking?: boolean; waiting?: boolean }) {
-  if (!isDesktop) return;
   current = { ...current, ...state };
   for (const listener of listeners) listener({ ...current });
   sendSnapshot();
@@ -50,4 +49,13 @@ function sendSnapshot() {
   reporting = reporting.catch(() => {}).then(() => fetch('/caicai/chat-state', { method: 'POST', headers: {
     ...desktopHeaders(), 'Content-Type': 'application/json',
   }, body, signal: AbortSignal.timeout(4000) })).catch(() => {});
+}
+
+export async function selectProjectDirectory(): Promise<string | null> {
+  const response = await fetch('/caicai/pick-directory', {
+    method: 'POST', headers: desktopHeaders(),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || '无法选择文件夹，请重试');
+  return result.root;
 }

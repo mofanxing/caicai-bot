@@ -180,7 +180,10 @@ def get_messages(conversation_id: str, db=Depends(get_db)):
     find_conversation(db, conversation_id)
     return db.scalars(
         select(Message)
-        .where(Message.conversation_id == conversation_id)
+        .where(
+            Message.conversation_id == conversation_id,
+            ~Message.external_id.startswith("task-report:"),
+        )
         .options(selectinload(Message.speech_jobs))
         .order_by(Message.created_at.desc(), Message.id.desc())
         .limit(100)

@@ -16,6 +16,8 @@ from app.migrations import initialize_database
 from app.services.chat import ChatService
 from app.services.speech import SpeechService
 from app.tasks.host import TaskWorkerHost
+from app.tasks.intents import TaskIntents
+from app.tasks.notifications import TaskNotifications
 from app.tasks.reports import TaskReports
 from app.tasks.service import TaskService
 
@@ -29,12 +31,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         initialize_database(engine)
         app.state.speech_service.start(session_factory)
+        app.state.task_notifications.start()
         if getattr(app.state, "manage_task_worker", False):
             app.state.task_worker_host.start()
         try:
             yield
         finally:
             app.state.task_worker_host.close()
+            app.state.task_notifications.close()
             app.state.speech_service.close()
             engine.dispose()
 
@@ -53,7 +57,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.task_service = TaskService(settings, session_factory)
     app.state.task_worker_host = TaskWorkerHost(settings)
     app.state.chat_service = ChatService(settings, app.state.secret_vault, app.state.speech_service)
+    app.state.chat_service.task_intents = TaskIntents(
+        app.state.task_service, app.state.chat_service.llm
+    )
     app.state.task_reports = TaskReports(app.state.task_service, app.state.chat_service)
+
+    app.state.task_notifications = TaskNotifications(
+        app.state.task_service, app.state.speech_service
+    )
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

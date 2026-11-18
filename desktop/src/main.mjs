@@ -75,6 +75,7 @@ async function boot() {
   let presentationVersion = 0;
   const presented = new Map();
   let selecting = false;
+  let pickingDirectory = false;
   const logger = Object.fromEntries(['info', 'warn', 'error', 'debug'].map(level => [level, message => {
     if (level !== 'debug') console[level === 'info' ? 'log' : level](`[caicai-desktop] ${message}`);
   }]));
@@ -159,6 +160,18 @@ async function boot() {
       void backendManager.start();
       json(res, 202, { ok: true, backendStatus: backendManager.status() }); return;
     }
+    if (url.pathname === '/caicai/pick-directory' && req.method === 'POST') {
+      if (pickingDirectory) { json(res, 409, { error: '文件夹选择窗口已打开' }); return; }
+      pickingDirectory = true;
+      try {
+        await app.whenReady();
+        const options = { title: '选择执行项目文件夹', properties: ['openDirectory'] };
+        const owner = chat && !chat.isDestroyed() ? chat : control && !control.isDestroyed() ? control : null;
+        const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+        json(res, 200, { root: result.canceled ? null : result.filePaths[0] || null });
+      } finally { pickingDirectory = false; }
+      return;
+    }
     if (url.pathname === '/caicai/select' && req.method === 'POST') {
       if (selecting) { json(res, 409, { error: '正在切换角色，请稍后重试' }); return; }
       selecting = true;
@@ -221,7 +234,7 @@ async function boot() {
   function showChat(visible = true) {
     if (chat && !chat.isDestroyed()) { if (visible) { chat.show(); chat.focus(); } return chat; }
     chat = new BrowserWindow({ title: '菜菜 · 和我聊聊', show: visible, width: 1120, height: 800, minWidth: 760, minHeight: 600,
-      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: 'caicai-chat', backgroundThrottling: false },
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: 'caicai-chat', backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
     });
     chat.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     chat.webContents.on('will-navigate', (event, target) => {
@@ -269,7 +282,7 @@ async function boot() {
       void checkBackendLifecycle({ showControl, showChat, origin: origin(), token: security.token, data, manager: backendManager })
         .then(() => app.quit()).catch(error => { logger.error('后端验收失败：' + error.message); void shutdown(1); });
     } else if (process.env.CAICAI_CHAT_CHECK === '1') {
-      void checkDesktopChat({ showChat, origin: origin(), token: security.token, data, chatPhases })
+      void checkDesktopChat({ showChat, origin: origin(), token: security.token, data, chatPhases, dialog })
         .then(() => shutdown(0)).catch(error => { logger.error('聊天验收失败：' + error.message); void shutdown(1); });
     } else if (process.env.DSH_PET_SMOKE !== '1') showControl();
     else void runChecks().catch(() => { console.error('[caicai-check] 检查失败'); void shutdown(1); });

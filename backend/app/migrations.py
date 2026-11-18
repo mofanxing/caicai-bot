@@ -11,6 +11,7 @@ def initialize_database(engine):
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE providers ADD COLUMN api_key_encrypted TEXT"))
     additions = {
+        "task_projects": {"registered": "BOOLEAN NOT NULL DEFAULT 1"},
         "conversations": {
             "voice_prompt": "TEXT NOT NULL DEFAULT ''",
             "feedback_enabled": "BOOLEAN NOT NULL DEFAULT 1",

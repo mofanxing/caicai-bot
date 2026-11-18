@@ -140,7 +140,7 @@ def retry_speech_job(job_id: str, request: Request, db=Depends(get_db)):
 def recent_previews(db=Depends(get_db)):
     return db.scalars(
         select(SpeechJob)
-        .where(SpeechJob.message_id.is_(None), SpeechJob.purpose != "feedback")
+        .where(SpeechJob.message_id.is_(None), SpeechJob.purpose == "speech")
         .order_by(SpeechJob.created_at.desc(), SpeechJob.id.desc())
         .limit(20)
     ).all()

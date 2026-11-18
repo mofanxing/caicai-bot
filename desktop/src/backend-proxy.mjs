@@ -16,8 +16,10 @@ export function allowedBackendPath(path, method) {
     }
   }
   const rules = [
-    ['GET', '^/api/v1/(plugins|projects|tasks|task-runtime)$'],
+    ['GET', '^/api/v1/(plugins|projects|tasks|task-runtime|task-notifications)$'],
     ['POST', '^/api/v1/(projects|tasks)$'],
+    ['DELETE', '^/api/v1/projects/' + id + '$'],
+    ['DELETE', '^/api/v1/task-notifications/' + id + '$'],
     ['PUT', '^/api/v1/plugins/[a-zA-Z0-9_-]+(?:[.][a-zA-Z0-9_-]+)*$'],
     ['GET', '^/api/v1/tasks/' + id + '(?:/events)?$'],
     ['POST', '^/api/v1/tasks/' + id + '/(?:cancel|report|acknowledge-interruption)$'],

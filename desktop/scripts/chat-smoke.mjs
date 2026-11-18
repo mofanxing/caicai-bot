@@ -45,7 +45,7 @@ try {
   if (backend.exitCode !== null || !(await fetch(origin + '/health', { signal: AbortSignal.timeout(1500) })).ok) {
     throw new Error('桌面退出不应停止复用的外部后端');
   }
-  for (const name of ['chat-smoke.json', 'chat-smoke.png', 'feedback-smoke.png', 'tasks-smoke.png']) writeFileSync(join(results, name), readFileSync(join(data, name)));
+  for (const name of ['chat-smoke.json', 'chat-smoke.png', 'feedback-smoke.png', 'tasks-smoke.png', 'task-report-smoke.png']) writeFileSync(join(results, name), readFileSync(join(data, name)));
   console.log(readFileSync(join(results, 'chat-smoke.json'), 'utf8'));
   console.log('桌面聊天验收截图：' + join(results, 'chat-smoke.png'));
 } catch (error) {

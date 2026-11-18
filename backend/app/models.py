@@ -126,6 +126,7 @@ class TaskProject(Base):
     id: Mapped[str] = mapped_column(primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(100))
     root: Mapped[str] = mapped_column(Text, unique=True)
+    registered: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

@@ -1,8 +1,9 @@
 import hashlib
 import json
 from contextlib import contextmanager
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.errors import ServiceError
 from app.models import (
@@ -131,7 +132,47 @@ class TaskService:
                 project = TaskProject(id=new_id(), root=root, name=payload.name)
                 db.add(project)
                 db.flush()
+            else:
+                project.registered, project.name = True, payload.name
         return project
+
+    def unregister_project(self, project_id):
+        with self.transaction() as db:
+            project = db.get(TaskProject, project_id)
+            if not project or not project.registered:
+                raise ServiceError("project_not_found", "项目尚未登记", 404)
+            if db.scalar(
+                select(Task.id)
+                .where(Task.project_id == project_id, Task.status.in_(ACTIVE | {"queued"}))
+                .limit(1)
+            ):
+                raise ServiceError("project_busy", "项目仍有待执行任务，请先取消或等待完成", 409)
+            project.registered = False
+        return {"deleted": True}
+
+    def prune_history(self):
+        cutoff = utc_now() - timedelta(days=5)
+        with self.transaction() as db:
+            # Report generation must not extend retention. Unreviewed interruptions
+            # remain visible until their recorded processes have been checked.
+            finished = select(TaskEvent.task_id).where(
+                TaskEvent.type == "task.finished", TaskEvent.occurred_at < cutoff
+            )
+            ids = list(
+                db.scalars(
+                    select(Task.id).where(
+                        Task.status.in_(TERMINAL),
+                        Task.id.in_(finished),
+                        (Task.status != "interrupted")
+                        | (Task.reason == "interruption_acknowledged"),
+                    )
+                )
+            )
+            if ids:
+                for model in (TaskArtifact, TaskEvent, TaskAttempt, Task):
+                    key = model.id if model is Task else model.task_id
+                    db.execute(delete(model).where(key.in_(ids)))
+        return len(ids)
 
     def _existing(self, db, payload, fingerprint):
         task = db.scalar(
@@ -172,7 +213,7 @@ class TaskService:
             if not config or not config.enabled:
                 raise ServiceError("plugin_disabled", "请先启用编程插件", 409)
             project = db.get(TaskProject, payload.project_id)
-            if not project:
+            if not project or not project.registered:
                 raise ServiceError("project_not_found", "项目尚未登记", 404)
             if str(executor.validate_project(project.root)) != project.root:
                 raise ServiceError("project_changed", "登记项目目录已改变", 409)
