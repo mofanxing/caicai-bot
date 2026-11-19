@@ -26,9 +26,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function setup() {
+function setup(initial = conversation) {
   function Harness() {
-    const [current, setCurrent] = useState(conversation);
+    const [current, setCurrent] = useState(initial);
     return <AntApp><ModelSettings api={api} conversation={current} providers={[]} voices={[
       { id: 'v1', name: '当前音色' } as VoiceProfile,
     ]} capabilities={{ debug_mock_enabled: true } as Capabilities} onSaved={setCurrent}
@@ -39,15 +39,19 @@ function setup() {
 
 describe('manual waiting voice settings', () => {
   it('edits and saves per-conversation text and switch without generating audio', async () => {
-    setup();
+    setup({ ...conversation, reply_mode: 'text' });
     await screen.findByText(/当前配置尚未生成提示语音/);
+    expect(screen.queryByText('回复方式')).toBeNull();
+    expect(screen.queryByText('语音表达提示词')).toBeNull();
+    expect(screen.queryByText(/当前本地复刻模式暂不使用自由文本指令/)).toBeNull();
+    expect(screen.queryByText(/文字边生成边显示/)).toBeNull();
     expect((screen.getByRole('textbox', { name: '思考提示语' }) as HTMLTextAreaElement).value).toBe('让我想想。');
     fireEvent.change(screen.getByRole('textbox', { name: '思考提示语' }), { target: { value: '大肥鱼想一想。' } });
     fireEvent.change(screen.getByRole('textbox', { name: '语音合成等待提示语' }), { target: { value: '等我准备好声音。' } });
     fireEvent.click(screen.getByRole('switch', { name: '等待时语音回应' }));
     fireEvent.click(screen.getByRole('button', { name: '保存聊天设置' }));
     await waitFor(() => expect(api.settings).toHaveBeenCalledWith('c1', expect.objectContaining({
-      feedback_enabled: false, feedback_thinking_text: '大肥鱼想一想。', feedback_waiting_text: '等我准备好声音。',
+      reply_mode: 'both', voice_prompt: '轻快', feedback_enabled: false, feedback_thinking_text: '大肥鱼想一想。', feedback_waiting_text: '等我准备好声音。',
     })));
     expect(api.generateFeedback).not.toHaveBeenCalled();
   });

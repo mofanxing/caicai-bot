@@ -68,14 +68,13 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
   const selectedVoice = Form.useWatch('voice_id', form);
   const feedbackBusy = [feedback?.thinking, feedback?.waiting].some(job => job?.status === 'queued' || job?.status === 'running');
   const selectedProvider = Form.useWatch('provider_id', form);
-  const replyMode = Form.useWatch('reply_mode', form);
   const modelRequest = useRef(0);
 
   useEffect(() => {
     form.setFieldsValue({ provider_id: conversation.provider_id || '',
       model_id: conversation.model_id || '', system_prompt: conversation.system_prompt,
-      reply_mode: conversation.reply_mode, voice_id: conversation.voice_id || undefined,
-      voice_prompt: conversation.voice_prompt || '', feedback_enabled: conversation.feedback_enabled ?? true,
+      voice_id: conversation.voice_id || undefined,
+      feedback_enabled: conversation.feedback_enabled ?? true,
       feedback_thinking_text: conversation.feedback_thinking_text ?? '收到，我想一想。',
       feedback_waiting_text: conversation.feedback_waiting_text ?? '我在准备语音，稍等一下。' });
     setDirty(false);
@@ -123,7 +122,7 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
   }
 
   async function save(values: { provider_id: string; model_id: string; system_prompt: string;
-    reply_mode: 'text' | 'voice' | 'both'; voice_id?: string; voice_prompt?: string;
+    voice_id?: string;
     feedback_enabled?: boolean; feedback_thinking_text?: string; feedback_waiting_text?: string }, generate = false) {
     setSaving(true);
     if (generate) onFeedbackGeneration?.(conversation.id, true);
@@ -131,8 +130,8 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
       const updated = await api.settings(conversation.id, {
         provider_id: values.provider_id || null,
         model_id: values.provider_id ? values.model_id.trim() : null,
-        system_prompt: values.system_prompt, reply_mode: values.reply_mode,
-        voice_id: values.voice_id || null, voice_prompt: values.voice_prompt || '',
+        system_prompt: values.system_prompt, reply_mode: 'both',
+        voice_id: values.voice_id || null, voice_prompt: conversation.voice_prompt || '',
         feedback_enabled: values.feedback_enabled ?? true,
         feedback_thinking_text: values.feedback_thinking_text,
         feedback_waiting_text: values.feedback_waiting_text,
@@ -174,15 +173,10 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
         <Input.TextArea rows={4} maxLength={16000} disabled={disabled || saving}
           placeholder="例如：你是菜菜，用简短、自然的语言与我聊天。" />
       </Form.Item>
-      <Form.Item name="reply_mode" label="回复方式"><Select disabled={disabled || saving} options={[
-        { value: 'text', label: '文字（可手动朗读）' }, { value: 'both', label: '文字 + 语音同步生成' },
-      ]} /></Form.Item>
-      <Form.Item name="voice_id" label="朗读音色" rules={replyMode !== 'text' ? [{ required: true, message: '请先添加并选择音色' }] : []}>
+      <Form.Item name="voice_id" label="朗读音色" rules={[{ required: true, message: '请先添加并选择音色' }]}>
         <Select allowClear disabled={disabled || saving} placeholder="在音色与语音页面上传录音"
           options={voices.map(voice => ({ value: voice.id, label: voice.name }))} />
       </Form.Item>
-      <Form.Item name="voice_prompt" label="语音表达提示词" extra="当前本地复刻模式暂不使用自由文本指令，避免被念出；语气跟随参考录音。已有提示词保留。"><Input.TextArea rows={2} maxLength={500}
-        disabled placeholder="当前语气跟随参考录音" /></Form.Item>
       <div className="feedback-settings">
         <h4>思考与等待语音</h4>
         <Form.Item name="feedback_enabled" label="等待时语音回应" valuePropName="checked">
@@ -195,7 +189,7 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
           <Input.TextArea rows={2} maxLength={100} showCount disabled={disabled || saving} />
         </Form.Item>
         <p className="muted compact">使用当前朗读音色，只合成上面填写的提示语正文。保存设置不会合成；点击下方按钮会先保存，再删除上一版的两条语音并重新生成。</p>
-        <Button data-feedback-generate="true" block loading={saving || feedbackBusy} disabled={disabled || !selectedVoice || replyMode === 'text' || feedbackBusy}
+        <Button data-feedback-generate="true" block loading={saving || feedbackBusy} disabled={disabled || !selectedVoice || feedbackBusy}
           onClick={() => { void form.validateFields().then(values => save(values, true)).catch(() => {}); }}>
           保存并生成提示语音
         </Button>
@@ -210,7 +204,6 @@ export function ModelSettings({ api, conversation, providers, voices, capabiliti
           {feedbackPlaybackStatus === 'failed' && ' 语音加载失败，请刷新或重新生成。'}
         </p>
       </div>
-      <p className="muted compact">文字边生成边显示，语音合并短句后分段合成并完整朗读。打开顶部「自动朗读」，默认就绪即播，也可选择短暂缓冲。首次加载模型较慢。</p>
       {dirty && <p className="unsaved">有未保存的修改，保存后新消息才会使用。</p>}
       <Button htmlType="submit" type="primary" block loading={saving} disabled={disabled}>保存聊天设置</Button>
     </Form>
