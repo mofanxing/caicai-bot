@@ -129,9 +129,22 @@ def read(client, task_id):
     return client.get(f"/api/v1/tasks/{task_id}", headers=HEADERS).json()
 
 
-def test_default_harness_task_preserves_config_events_and_artifacts(client, deepseek):
+@pytest.mark.parametrize("version", ["0.2.2-rc.3", "0.2.2-rc.5"])
+def test_default_harness_task_preserves_config_events_and_artifacts(client, deepseek, version):
     service, worker, root, payload = deepseek
     executor = service.registry.executors["deepseek-harness"]
+    binary = executor.binary()
+    with open(binary, "w") as stream:
+        stream.write(f"#!{sys.executable}\n" + DSH_FIXTURE.replace("0.2.2-rc.3", version))
+    status = executor.check_availability()
+    assert status["ready"] is True
+    assert status["version"] == version
+    plugin = next(
+        p for p in client.get("/api/v1/plugins", headers=HEADERS).json()
+        if p["manifest"]["id"] == "caicai.deepseek"
+    )
+    assert plugin["executor"]["ready"] is True
+    assert plugin["executor"]["version"] == version
     profile = executor.home() / "profiles/desktop/cordis.patch.yml"
     original = profile.read_bytes()
     with executor.overlay() as patch:
@@ -263,6 +276,10 @@ def test_harness_availability_errors_are_actionable(client, deepseek, tmp_path, 
     status = executor.check_availability()
     assert status["ready"] is False
     assert status["code"] == expected
+    if change == "version":
+        assert status["version"] == "0.2.3"
+        assert "0.2.3" in status["message"]
+        assert "0.2.2-rc.5" in status["message"]
 
 
 def test_harness_profile_validation_and_no_external_artifacts(client, deepseek, tmp_path):

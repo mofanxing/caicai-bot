@@ -1,4 +1,4 @@
-"""Installed DeepSeek Harness 0.2.2-rc.3 headless NDJSON protocol."""
+"""Verified DeepSeek Harness headless NDJSON protocol versions."""
 
 import hashlib
 import os
@@ -16,14 +16,15 @@ from app.tasks.contracts import CAPABILITIES
 from app.tasks.process import JsonProcessExecutor, project_root, safe_text
 
 BUNDLED_CLI = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-VERIFIED_VERSION = "0.2.2-rc.3"
+VERIFIED_VERSIONS = ("0.2.2-rc.3", "0.2.2-rc.5")
+VERIFIED_VERSION_LABEL = " / ".join(VERIFIED_VERSIONS)
 
 
 class DeepSeekExecutor(JsonProcessExecutor):
     id = "deepseek-harness"
     capabilities = frozenset(CAPABILITIES)
     limitations = [
-        "仅核实 DeepSeek Harness 0.2.2-rc.3 的 headless JSON 协议",
+        f"已核实 DeepSeek Harness {VERIFIED_VERSION_LABEL} 的 headless JSON 协议",
         "沿用 Harness 保存的模型与凭据；就绪检查不调用模型，不保证认证有效",
         "workspace-write 限制写入，不提供仅能读取项目的隔离",
         "无人值守审批策略为 never；不支持交互确认、暂停或自动恢复",
@@ -150,13 +151,15 @@ class DeepSeekExecutor(JsonProcessExecutor):
                 [binary, "--version"], capture_output=True, timeout=5, env=self.environment()
             )
             version = result.stdout.decode(errors="replace").strip()
-            if result.returncode or version != VERIFIED_VERSION:
+            if version:
+                base["version"] = safe_text(version)[:200]
+            if result.returncode or version not in VERIFIED_VERSIONS:
                 return {
                     **base,
                     "code": "deepseek_version_unsupported",
-                    "message": "当前适配器仅核实 DeepSeek Harness 0.2.2-rc.3",
+                    "message": f"检测到 DeepSeek Harness {base['version']}；"
+                    f"当前适配器已核实 {VERIFIED_VERSION_LABEL}，请更新菜菜适配器",
                 }
-            base["version"] = version
             help_result = subprocess.run(
                 [binary, "headless", "--help"],
                 capture_output=True,

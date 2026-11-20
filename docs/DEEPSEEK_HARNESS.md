@@ -1,18 +1,25 @@
 # DeepSeek Harness 接入
 
-核实与实施日期：2026-11-18（Asia/Shanghai）。
+核实与实施日期：2026-11-18；版本兼容核实：2026-11-19；文档更新：2026-11-20（Asia/Shanghai）。
 
 已完成：正式适配器、独立插件、任务中心、聊天显式派发、详情与事件补读、按需增量汇报，以及桌面自有后端的 worker 托管。已通过真实模型修复与真实取消验收。自然语言自动识别建任务、任务结束后的一次性语音提醒已接通；执行中关键节点自动汇报和语音已实现；交互审批和恢复继续后置。
 
 ## 已核实的安装与协议
 
 - 本机应用：/Applications/DeepSeek Harness.app，bundle ID 为 com.deepseek.dsh。
-- 安装版本：0.2.2-rc.3，应用包声明作者为 Hangzhou DeepSeek Artificial Intelligence Co., Ltd.，构建提交为 6b729fedde0c8fd03af7afdf5a711aa64fe87c3b。
+- 首次核实版本（2026-11-18）：0.2.2-rc.3，应用包声明作者为 Hangzhou DeepSeek Artificial Intelligence Co., Ltd.，构建提交为 6b729fedde0c8fd03af7afdf5a711aa64fe87c3b。2026-11-19 核实的本机安装版本为 0.2.2-rc.5。
 - 安装包声明源码仓库：https://github.com/deepseek-ai/deepseek-harness.git，包为 @deepseek-ai/dsh-headless。
 - 自带 CLI 位于 Contents/Resources/runtime/cli/bin/dsh。无需另装 CLI，不要求 GUI 保持打开。
 - 已实测 dsh --version 和 dsh headless --help；支持 --json、标准输入任务、--permission-mode workspace-write、--approval-policy never。
 - 协议依据为该安装包随附的 README.zh.md、src/json-stream.ts、src/index.ts、src/startup.ts，不假设其他版本兼容。
 - JSON 事件包括 session、status、text、thinking、tool_call、tool_result、final、error；只有进程退出码为 0 且 final.reason.kind 为 completed 才记录执行器成功。工具返回不等于检查通过。菜菜不保存 thinking 事件。
+
+2026-11-19 本机升级至 0.2.2-rc.5 后，旧适配器因只接受 0.2.2-rc.3 而返回
+`deepseek_version_unsupported`。已核对 rc.5 安装包中的 headless 参数、JSON 事件协议及
+headless overlay 配置，适配器现在同时接受 0.2.2-rc.3 / 0.2.2-rc.5，并继续检查必要参数
+和模型选择。不支持的版本也会显示实际检测版本及已核实版本，便于定位后续升级问题。
+rc.5 已通过本机 CLI 与模型选择就绪检查，以及两版协议夹具的任务全流程回归；
+下文真实模型修复及取消验收仍对应 2026-11-18 的 rc.3，未在此次检查中重跑真实模型任务。
 
 ## 配置归属与来源
 
@@ -31,6 +38,13 @@ backend/.env 可选配置：
     DEEPSEEK_MODEL_PROFILE=desktop
 
 找不到 PATH 中的 dsh 时，默认自动定位 /Applications/DeepSeek Harness.app 自带的 CLI。显式配置的其他路径缺失时不会降级到另一个程序。可用性检查只验证版本、参数与模型选择，不调用模型、不承诺保存的登录仍有效；认证错误在真实运行中呈现。
+
+## 升级后任务中心提示不可用
+
+- 当前已核实版本为 0.2.2-rc.3 / 0.2.2-rc.5；其他版本返回 `deepseek_version_unsupported`，提示包含实际检测版本和已核实版本。
+- Harness 升级后若出现此提示，先核对任务中心显示的版本与适配器支持范围；需要更新菜菜适配器并重启 Python 后端。桌面托管后端可通过完全退出、重新启动菜菜加载更新，仅刷新聊天页不会重新加载后端代码。
+- 版本检查通过后仍会检查 headless 参数和所选 profile 的模型配置；对应错误分别为 `deepseek_protocol_unsupported` 和 `deepseek_model_not_configured`。执行器就绪仍需在任务中心启用插件才能派发任务。
+- 2026-11-19 回归结果：Harness 适配测试 23 项、任务调度及 worker / 体验 / 关键节点相关测试 55 项，共 78 项通过。两版协议夹具均覆盖插件状态查询和任务执行；本机 rc.5 就绪检查返回 `ready: true`。
 
 ## 使用
 
