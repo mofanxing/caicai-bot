@@ -11,6 +11,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('/node_modules/')) return;
+          if (id.includes('/node_modules/pinyin-pro/')) return 'wake-phonetics';
           if (id.includes('/@ant-design/icons')) return 'icons';
           if (id.includes('/node_modules/react') || id.includes('/node_modules/scheduler')) return 'react-vendor';
           if (id.includes('/node_modules/antd/')) return 'antd-components';

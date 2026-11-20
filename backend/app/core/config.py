@@ -25,6 +25,11 @@ class Settings(BaseSettings):
         Path(__file__).resolve().parents[2] / "data/tts/models/VoxCPM2-4bit"
     )
     local_tts_timeout_seconds: float = Field(default=600, ge=10, le=1800)
+    local_asr_python: str = str(Path(__file__).resolve().parents[2] / ".tts-venv/bin/python")
+    local_asr_model_dir: str = str(
+        Path(__file__).resolve().parents[2] / "data/asr/models/Whisper-small"
+    )
+    local_asr_timeout_seconds: float = Field(default=60, ge=5, le=60)
     codex_binary: str = "codex"
     deepseek_binary: str = "dsh"
     deepseek_home: str = ""

@@ -12,6 +12,7 @@
     "start": "node scripts/start.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:chat": "node scripts/chat-smoke.mjs",
+    "smoke:voice": "node scripts/voice-smoke.mjs",
     "smoke:backend": "node scripts/backend-smoke.mjs",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs"

@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.api.routes import find_local_conversation, get_db, require_admin
 from app.core.errors import ServiceError
+from app.integrations.local_recognition import MAX_AUDIO_BYTES
 from app.models import Message, SpeechJob, Voice
 from app.schemas import (
     MessageSpeechRead,
@@ -36,6 +37,20 @@ def find_job(db, job_id):
 @speech_router.get("/speech/status")
 def speech_status(request: Request):
     return request.app.state.speech_service.engine.status()
+
+
+@speech_router.get("/speech/recognition/status")
+def recognition_status(request: Request):
+    return request.app.state.recognition_engine.status()
+
+
+@speech_router.post("/speech/transcriptions")
+def transcribe_speech(request: Request, audio: UploadFile = File(...)):
+    try:
+        data = audio.file.read(MAX_AUDIO_BYTES + 1)
+        return request.app.state.recognition_engine.transcribe(data)
+    finally:
+        audio.file.close()
 
 
 @speech_router.get("/voices", response_model=list[VoiceRead])

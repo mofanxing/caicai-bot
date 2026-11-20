@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.core.errors import ServiceError
 from app.core.secrets import SecretVault
 from app.db import create_session_factory
+from app.integrations.local_recognition import LocalRecognitionEngine
 from app.migrations import initialize_database
 from app.services.chat import ChatService
 from app.services.speech import SpeechService
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            app.state.recognition_engine.shutdown()
             app.state.task_worker_host.close()
             app.state.task_milestones.close()
             app.state.task_notifications.close()
@@ -57,6 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.secret_vault = SecretVault(settings)
     app.state.speech_service = SpeechService(settings)
+    app.state.recognition_engine = LocalRecognitionEngine(settings)
     app.state.task_service = TaskService(settings, session_factory)
     app.state.task_worker_host = TaskWorkerHost(settings)
     app.state.chat_service = ChatService(settings, app.state.secret_vault, app.state.speech_service)

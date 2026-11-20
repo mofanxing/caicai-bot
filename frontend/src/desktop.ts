@@ -14,6 +14,14 @@ let current: DesktopState = { thinking: false, speaking: false, waiting: false }
 let reporting: Promise<unknown> = Promise.resolve();
 const audioSources = new Set<object>();
 const feedbackSources = new Set<object>();
+const audioListeners = new Set<(active: boolean) => void>();
+export function subscribeAudioActivity(listener: (active: boolean) => void) {
+  audioListeners.add(listener); listener(audioSources.size + feedbackSources.size > 0);
+  return () => { audioListeners.delete(listener); };
+}
+function notifyAudioActivity() {
+  for (const listener of audioListeners) listener(audioSources.size + feedbackSources.size > 0);
+}
 const spokenTexts = new Map<object, string>();
 const listeners = new Set<(state: DesktopState) => void>();
 const waitingPlayers = new Set<string>();
@@ -26,9 +34,11 @@ export function reportAudioPlayback(source: object, active: boolean, kind: 'repl
   else spokenTexts.delete(source);
   if (kind === 'feedback') {
     if (active) feedbackSources.add(source); else feedbackSources.delete(source);
+    notifyAudioActivity();
     sendSnapshot(); return;
   }
   if (active) audioSources.add(source); else audioSources.delete(source);
+  notifyAudioActivity();
   reportDesktopState({ speaking: audioSources.size > 0 });
 }
 export function reportSpeechWaiting(id: string, active: boolean) {

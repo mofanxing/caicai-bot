@@ -14,10 +14,20 @@ import { proxyBackend } from './backend-proxy.mjs';
 import { chatPresentation, validateChatState } from './chat-state.mjs';
 import { checkDesktopChat } from './chat-check.mjs';
 import { BackendManager } from './backend-manager.mjs';
+import { allowChatMicrophone } from './media-policy.mjs';
 import { checkBackendLifecycle } from './backend-check.mjs';
+import { checkVoiceChat } from './voice-check.mjs';
 
 const require = createRequire(import.meta.url);
 const { app, BrowserWindow, ipcMain, session, shell, dialog } = require('electron');
+if (process.env.CAICAI_VOICE_CHECK === '1') {
+  const audio = process.env.CAICAI_VOICE_CHECK_AUDIO;
+  if (!audio || !existsSync(audio)) throw new Error('语音验收缺少合成麦克风 WAV 文件');
+  app.commandLine.appendSwitch('use-fake-device-for-media-stream');
+  app.commandLine.appendSwitch('use-file-for-fake-audio-capture', audio);
+  // The isolated audio service must read this test-only temporary WAV.
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceSandbox');
+}
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const data = process.env.CAICAI_DESKTOP_DATA;
 if (!data || !process.env.DSH_HOME) throw new Error('请通过 npm start 启动菜菜桌面端');
@@ -236,6 +246,15 @@ async function boot() {
     chat = new BrowserWindow({ title: '菜菜 · 和我聊聊', show: visible, width: 1120, height: 800, minWidth: 760, minHeight: 600,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: 'caicai-chat', backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
     });
+    const contents = chat.webContents;
+    const microphoneAllowed = (sender, permission, requestingUrl, details, mediaTypes) =>
+      sender?.id === contents.id && allowChatMicrophone({ permission,
+        currentUrl: contents.getURL(), requestingUrl, origin: origin(),
+        isMainFrame: details?.isMainFrame, mediaTypes });
+    contents.session.setPermissionCheckHandler((sender, permission, requestingOrigin, details) =>
+      microphoneAllowed(sender, permission, requestingOrigin, details, [details?.mediaType]));
+    contents.session.setPermissionRequestHandler((sender, permission, callback, details) =>
+      callback(microphoneAllowed(sender, permission, details?.requestingUrl, details, details?.mediaTypes)));
     chat.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     chat.webContents.on('will-navigate', (event, target) => {
       if (new URL(target).origin !== origin() || !new URL(target).pathname.startsWith('/chat/')) event.preventDefault();
@@ -278,7 +297,10 @@ async function boot() {
       if (event.sender.getURL().split(/[?#]/)[0] === pathToFileURL(renderer).href) showChat();
     });
     console.log(`[caicai-desktop] 已启动 ${origin()}（仅本机；收起窗口后桌宠继续运行）`);
-    if (process.env.CAICAI_BACKEND_CHECK) {
+    if (process.env.CAICAI_VOICE_CHECK === '1') {
+      void checkVoiceChat({ showChat, origin: origin(), token: security.token, data })
+        .then(() => shutdown(0)).catch(error => { logger.error('语音验收失败：' + error.message); void shutdown(1); });
+    } else if (process.env.CAICAI_BACKEND_CHECK) {
       void checkBackendLifecycle({ showControl, showChat, origin: origin(), token: security.token, data, manager: backendManager })
         .then(() => app.quit()).catch(error => { logger.error('后端验收失败：' + error.message); void shutdown(1); });
     } else if (process.env.CAICAI_CHAT_CHECK === '1') {

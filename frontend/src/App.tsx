@@ -17,6 +17,7 @@ import type { Capabilities, ChatMessage, Conversation, Provider, ProviderCreate,
 import { MessageSpeech, prepareSpeechPlayback, stopSpeechPlayback, VoicesPage } from './speech';
 import { chatChannel, desktopHeaders, isDesktop, reportDesktopState } from './desktop';
 import { createWaitingFeedback, type WaitingFeedback, type FeedbackStatus } from './feedback';
+import { VoiceChat } from './voice-chat';
 
 type Page = 'tasks' | 'chat' | 'providers' | 'voices' | 'channels' | 'connection';
 const TOKEN_STORAGE = 'caicai.admin-token';
@@ -534,12 +535,12 @@ export default function App() {
     finally { setCreating(false); }
   }
 
-  async function send() {
-    if (!active || !draft.trim() || sendLock.current || busy || historyLoading || historyError) return;
+  async function send(voiceText?: string) {
+    const text = (voiceText ?? draft).trim();
+    if (!active || !text || sendLock.current || busy || historyLoading || historyError) return;
     if (!active.provider_id && !capabilities?.debug_mock_enabled) {
       message.warning('请先在右侧选择中转站和模型，保存后再发送。'); return;
     }
-    const text = draft.trim();
     if (autoRead && active.reply_mode !== 'text') void prepareSpeechPlayback().catch(() => {});
     stopSpeechPlayback();
     const conversationId = active.id;
@@ -547,7 +548,8 @@ export default function App() {
     let streamedId = '';
     const controller = new AbortController(); streamController.current = controller;
     setAutoReadMessage('');
-    sendLock.current = true; setSending(true); setPendingText(text); setDraft(''); setHistoryError('');
+    sendLock.current = true; setSending(true); setPendingText(text); setHistoryError('');
+    if (voiceText === undefined) setDraft('');
     try {
       const result = await api.sendStream(conversationId, text, externalId, event => {
         if (controller.signal.aborted) return;
@@ -685,11 +687,16 @@ export default function App() {
             <div className="message-row assistant"><Avatar src="/favicon.svg" shape="square" /><div className="typing-bubble"><span /><span /><span /><small>菜菜正在想一想</small></div></div></>}
         </>}
         {activeId && <TaskCards key={activeId} api={api} conversationId={activeId} refreshKey={taskRevision} />}
-      </div><div className="composer"><Input.TextArea aria-label="聊天内容" value={draft} onChange={event => setDraft(event.target.value)}
+      </div><div className="composer"><VoiceChat key={activeId} api={api}
+        disabled={!active || !!historyError || (!active.provider_id && !capabilities?.debug_mock_enabled)}
+        blocked={busy || historyLoading || taskComposerOpen || newChatOpen} hasVoice={!!active?.voice_id}
+        onStart={() => { stopSpeechPlayback(); void prepareSpeechPlayback().catch(() => {});
+          setAutoRead(true); localStorage.setItem('caicai.auto-read', 'true'); }} onSend={send} />
+        <Input.TextArea aria-label="聊天内容" value={draft} onChange={event => setDraft(event.target.value)}
         disabled={!active || busy} placeholder={active ? '和菜菜聊天，或直接说：帮我修复 XX 项目的登录问题并运行测试…' : '创建会话后开始聊天'} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={16000}
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
         <div className="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><div><Button className="chat-task-entry" disabled={!active || busy} onClick={() => setTaskComposerOpen(true)}>交给菜菜执行</Button><Button data-chat-send type="primary" icon={<SendOutlined />} loading={sending}
-          disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={send}>发送</Button></div></div></div>
+          disabled={!active || !draft.trim() || busy || historyLoading || !!historyError} onClick={() => void send()}>发送</Button></div></div></div>
       <div className="chat-disclaimer">{active?.provider_id ? '当前使用中转站模型，调用可能产生费用。' : '模拟模式只验证聊天流程，不代表真实 AI 回答。'} {isDesktop ? '当前为桌面聊天，消息不会发送到微信。' : '当前为网页测试，消息不会发送到微信。'}</div>
     </section><aside className="chat-settings">{active && capabilities ? <ModelSettings key={active.id} api={api} conversation={active}
       providers={providers} voices={voices} capabilities={capabilities} disabled={busy}
@@ -708,7 +715,7 @@ export default function App() {
       <div className="channel-grid"><Card><div className="channel-icon wechat"><WechatOutlined /></div><Tag color="gold">待接入</Tag><h2>普通微信好友聊天</h2><p>像和好友聊天一样，给菜菜发消息并收到回复。</p>
         <ul><li>已预留个人微信桥接接口</li><li>尚未实现扫码登录和真实消息收发</li><li>下一步验证好友文字与原生语音收发</li></ul><Button disabled block>微信登录 · 暂未开放</Button></Card>
       <Card><div className="channel-icon voice"><AudioOutlined /></div><Tag color="green">本地语音</Tag><h2>专属音色回复</h2><p>参考录音、本地合成和音色试听在独立页面管理。</p>
-        <ul><li>音色管理与试听已开放</li><li>先安装本地模型，再生成语音</li><li>语音识别与微信语音投递后续接入</li></ul><Button block onClick={() => setPage('voices')}>打开音色与语音</Button></Card></div>
+        <ul><li>音色管理与试听已开放</li><li>聊天页支持本地语音聊天与自定义唤醒词</li><li>微信语音投递后续接入</li></ul><Button block onClick={() => setPage('voices')}>打开音色与语音</Button></Card></div>
       <Alert type="info" showIcon message="现在可以测试什么？" description="添加中转站、选择模型、修改角色设定，并直接在「聊天测试」中验证文字回复。" />
     </div>}
 
@@ -720,7 +727,8 @@ export default function App() {
     </Card><Card title="工作台能力"><div className="capability-row"><span>模型对话</span><Tag color="green">OpenAI 兼容</Tag></div>
       <div className="capability-row"><span>本地模拟回复</span><Tag color={capabilities?.debug_mock_enabled ? 'green' : 'default'}>{capabilities?.debug_mock_enabled ? '后端已开启' : '未开启'}</Tag></div>
       <div className="capability-row"><span>语音合成</span><Tag color="green">本地引擎 · 在音色页检查状态</Tag></div>
-      <div className="capability-row"><span>微信 / 语音识别</span><Tag>待接入</Tag></div>
+      <div className="capability-row"><span>语音识别</span><Tag color="green">本地 Whisper · 唤醒词可设置</Tag></div>
+      <div className="capability-row"><span>微信</span><Tag>待接入</Tag></div>
       <p className="muted">令牌和 API Key 不会写入前端源码。后端环境文件不要提交到 Git。</p></Card></div>}
     <footer className="workspace-footer"><span>CAICAI BOT</span><span>一点智能，一点陪伴。</span></footer>
   </main><TaskNotifications api={api} autoRead={autoRead} busy={busy} /><TaskComposer api={api} conversations={debugConversations} conversationId={activeId || undefined}

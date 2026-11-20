@@ -16,6 +16,8 @@ export function allowedBackendPath(path, method) {
     }
   }
   const rules = [
+    ['GET', '^/api/v1/speech/recognition/status$'],
+    ['POST', '^/api/v1/speech/transcriptions$'],
     ['GET', '^/api/v1/(plugins|projects|tasks|task-runtime|task-notifications)$'],
     ['POST', '^/api/v1/(projects|tasks)$'],
     ['DELETE', '^/api/v1/projects/' + id + '$'],

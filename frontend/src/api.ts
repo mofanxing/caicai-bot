@@ -106,6 +106,13 @@ export async function request<T>(token: string, path: string, init: RequestInit 
 }
 
 export const createApi = (token: string) => ({
+  recognitionStatus: (signal?: AbortSignal) => request<{ available: boolean; detail: string; state: string }>(
+    token, '/speech/recognition/status', { signal }),
+  transcribeSpeech: (audio: Blob, signal?: AbortSignal) => {
+    const body = new FormData(); body.append('audio', audio, 'microphone.wav');
+    return request<{ text: string; duration_seconds: number; recognition_seconds: number }>(
+      token, '/speech/transcriptions', { method: 'POST', body, signal });
+  },
   taskRuntime: () => request<{ mode: string; state: string }>(token, '/task-runtime'),
   reportTask: (id: string) => request<{ text: string; source_seq: number; cached: boolean }>(token,
     '/tasks/' + encodeURIComponent(id) + '/report', { method: 'POST' }),

@@ -5,6 +5,11 @@ import { once } from 'node:events';
 import { allowedBackendPath, proxyBackend } from '../src/backend-proxy.mjs';
 
 test('代理仅允许明确的桌面 API 路径和方法', () => {
+  assert.equal(allowedBackendPath('/api/v1/speech/recognition/status', 'GET'), true);
+  assert.equal(allowedBackendPath('/api/v1/speech/transcriptions', 'POST'), true);
+  assert.equal(allowedBackendPath('/api/v1/speech/transcriptions', 'GET'), false);
+  assert.equal(allowedBackendPath('/api/v1/speech/recognition/status', 'POST'), false);
+  assert.equal(allowedBackendPath('/api/v1/speech/transcriptions?target=x', 'POST'), false);
   assert.equal(allowedBackendPath('/api/v1/desktop/conversations/c1/messages/stream', 'POST'), true);
   for (const path of ['/api/v1/debug/conversations/c1/messages', '/api/v1/channels/wechat-personal/inbound', '/api/v1/../health', '/api/v1/providers/p1/key?target=x']) {
     assert.equal(allowedBackendPath(path, 'POST'), false);
