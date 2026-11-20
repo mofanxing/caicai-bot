@@ -1,6 +1,7 @@
 """Resolve explicit execution requests in local conversations."""
 
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -9,6 +10,29 @@ from sqlalchemy import select
 from app.core.errors import ServiceError
 from app.models import Provider, TaskProject
 from app.tasks.contracts import TaskCreate
+
+# Match complete, self-contained utterances. Short follow-ups and mixed requests
+# still need the model to interpret the preceding conversation.
+DIRECT_CHAT = re.compile(
+    r"(?:你好(?:呀|啊)?|您好|早上好|晚上好|谢谢(?:你)?|hello|hi|thank you"
+    r"|(?:请|请你|帮我)?(?:介绍一下你自己|做个自我介绍|讲(?:一个|个)笑话"
+    r"|讲(?:一个|个)(?:睡前|小)?故事|规划今天的学习)"
+    r"|(?:请问|告诉我)?(?:现在几点(?:了)?|今天(?:是)?(?:星期几|几号))"
+    r"|(?:今天|明天)(?:的)?天气(?:怎么样|如何))"
+    r"[呀啊吗呢吧]?[。！？!?．.]*",
+    re.IGNORECASE,
+)
+
+# Standalone factual questions can also go straight to the chat model. Leave
+# multi-clause requests, project references and contextual questions to the router.
+FACTUAL_QUESTION = re.compile(
+    r"(?:请问)?(?:什么是|为什么|谁发明了|谁写的|谁提出了)"
+    r"[\w ]{2,60}[？?。！!]?"
+)
+TASK_OR_FOLLOWUP = re.compile(
+    r"项目|仓库|代码|文件|目录|插件|执行|运行|修复|修改|创建|测试|帮我|顺便|然后|并且"
+    r"|这个|那个|刚才|上面|前面|之前|接着|继续|失败|报错|不行|这样|那样"
+)
 
 
 class TaskIntent(BaseModel):
@@ -24,6 +48,11 @@ class TaskIntents:
 
     def respond(self, db, conversation, message, history):
         if conversation.channel not in {"desktop", "debug"} or not conversation.provider_id:
+            return None
+        request = message.user_text.strip()
+        if DIRECT_CHAT.fullmatch(request) or (
+            FACTUAL_QUESTION.fullmatch(request) and not TASK_OR_FOLLOWUP.search(request)
+        ):
             return None
         projects = db.scalars(select(TaskProject).where(TaskProject.registered.is_(True))).all()
         if not projects:

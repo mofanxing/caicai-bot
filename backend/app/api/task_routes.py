@@ -75,8 +75,8 @@ def tasks(
     limit: int = Query(50, ge=1, le=200),
     db=Depends(get_db),
 ):
-    request.app.state.task_service.prune_history()
-    query = select(Task)
+    service = request.app.state.task_service
+    query = select(Task).where(~service.expired_history())
     if conversation_id:
         query = query.where(Task.conversation_id == conversation_id)
     rows = db.scalars(query.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)).all()

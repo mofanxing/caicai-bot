@@ -105,7 +105,7 @@ def find_provider(db, provider_id: str):
 def replace_provider_key(
     provider_id: str, payload: ProviderKeyUpdate, request: Request, db=Depends(get_db)
 ):
-    with request.app.state.chat_service.provider_guard(provider_id):
+    with request.app.state.chat_service.provider_guard(provider_id, exclusive=True):
         provider = find_provider(db, provider_id)
         provider.api_key_encrypted = request.app.state.secret_vault.encrypt(
             payload.api_key.get_secret_value()
@@ -118,7 +118,7 @@ def replace_provider_key(
 
 @admin.delete("/providers/{provider_id}")
 def delete_provider(provider_id: str, request: Request, db=Depends(get_db)):
-    with request.app.state.chat_service.provider_guard(provider_id):
+    with request.app.state.chat_service.provider_guard(provider_id, exclusive=True):
         provider = find_provider(db, provider_id)
         affected = db.execute(
             update(Conversation)

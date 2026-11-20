@@ -1,6 +1,7 @@
 from sqlalchemy import inspect, text
 
 from app.db import Base
+from app.models import AUTOMATIC_REPORT_SQL
 
 
 def initialize_database(engine):
@@ -29,3 +30,17 @@ def initialize_database(engine):
             for name, definition in fields.items():
                 if name not in existing:
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_task_events_auto_report "
+                    f"ON task_events(task_id, seq) WHERE {AUTOMATIC_REPORT_SQL}"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_task_events_finished "
+                    "ON task_events(task_id, occurred_at) WHERE type = 'task.finished'"
+                )
+            )

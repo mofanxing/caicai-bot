@@ -145,6 +145,20 @@ describe('sentence playback queue', () => {
     expect(pause).toHaveBeenCalled();
   });
 
+  it('loads only the selected historical reply after a manual click', async () => {
+    const api = apiMock();
+    render(<AntApp>{['old', 'selected'].map(id =>
+      <MessageSpeech key={id} api={api} conversationId="c" messageId={id}
+        initialJobId={id} jobIds={[id]} canGenerate autoPlay={false} />)}</AntApp>);
+    const buttons = screen.getAllByRole('button', { name: /开始朗读/ });
+    expect(api.speechJob).not.toHaveBeenCalled();
+    expect(api.speechAudio).not.toHaveBeenCalled();
+    fireEvent.click(buttons[1]);
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.speechJob).mock.calls).toEqual([['selected']]);
+    expect(vi.mocked(api.speechAudio).mock.calls).toEqual([['selected']]);
+  });
+
   it('does not autoplay historical messages and allows manual playback', async () => {
     const view = render(<SpeechPlaylist api={apiMock()} jobIds={['j1']} />);
     await screen.findByText('第 1 段 · 已就绪');

@@ -1,8 +1,23 @@
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
+from pydantic import AfterValidator
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+
+def as_utc(value: datetime) -> datetime:
+    # SQLite returns stored UTC timestamps without an offset.
+    return (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
+
+
+UtcTimestamp = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class Base(DeclarativeBase):

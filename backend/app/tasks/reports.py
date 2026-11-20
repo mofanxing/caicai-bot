@@ -46,9 +46,6 @@ class TaskReports:
                         "请在关联会话配置菜菜的聊天模型后生成汇报；原始进度与执行器结果仍可查看",
                         409,
                     )
-                provider = db.get(Provider, conversation.provider_id)
-                if not provider:
-                    raise ServiceError("report_model_missing", "菜菜的聊天模型站点已删除", 409)
                 recent = [e for e in fresh if e.seq > prior.get("source_seq", 0)][-32:]
                 data = {
                     "goal": task.goal,
@@ -77,7 +74,10 @@ class TaskReports:
                     },
                     {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
                 ]
-                with self.chat.provider_guard(provider.id):
+                with self.chat.provider_guard(conversation.provider_id):
+                    provider = db.get(Provider, conversation.provider_id)
+                    if not provider:
+                        raise ServiceError("report_model_missing", "菜菜的聊天模型站点已删除", 409)
                     summary = safe_text(
                         self.chat.llm.complete(provider, conversation.model_id, messages)
                     )

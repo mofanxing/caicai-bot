@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from datetime import timedelta
 
 from sqlalchemy import and_, exists, or_, select
@@ -23,6 +24,7 @@ class TaskNotifications:
         self.service, self.speech = service, speech
         self.stopping = threading.Event()
         self.thread = None
+        self.next_history_prune = 0.0
 
     def start(self):
         self.thread = threading.Thread(target=self.run, name="task-notifications", daemon=True)
@@ -43,13 +45,16 @@ class TaskNotifications:
 
     def tick(self):
         self.cleanup()
-        self.service.prune_history()
+        if time.monotonic() >= self.next_history_prune:
+            self.service.prune_history()
+            self.next_history_prune = time.monotonic() + 3600
         with self.service.session_factory() as db:
             ids = list(
                 db.scalars(
                     select(Task.id)
                     .where(
                         Task.status.in_(TERMINAL),
+                        ~self.service.expired_history(),
                         Task.conversation_id.is_not(None),
                         ~exists().where(
                             TaskEvent.task_id == Task.id, TaskEvent.type == "notification.sent"

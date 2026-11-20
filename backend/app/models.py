@@ -183,6 +183,14 @@ class TaskAttempt(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# The task runtime uses SQLite JSON. Keep the partial-index predicate identical
+# in maintenance queries so SQLite can select the index for older databases too.
+AUTOMATIC_REPORT_SQL = (
+    "json_extract(payload, '$.automatic') = 1 "
+    "AND json_extract(payload, '$.kind') = 'caicai_report'"
+)
+
+
 class TaskEvent(Base):
     __tablename__ = "task_events"
     __table_args__ = (UniqueConstraint("task_id", "seq"),)

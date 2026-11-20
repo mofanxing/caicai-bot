@@ -1,7 +1,8 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.db import UtcTimestamp
 
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 ACTIVE = {"running", "waiting_confirmation", "cancelling"}
@@ -75,7 +76,7 @@ class ProjectRead(BaseModel):
     id: str
     name: str
     root: str
-    created_at: datetime
+    created_at: UtcTimestamp
 
 
 class TaskRead(BaseModel):
@@ -93,8 +94,8 @@ class TaskRead(BaseModel):
     current_step: str | None = None
     reason: str | None
     event_seq: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcTimestamp
+    updated_at: UtcTimestamp
 
 
 class AttemptRead(BaseModel):
@@ -108,8 +109,8 @@ class AttemptRead(BaseModel):
     status: str
     exit_code: int | None
     reason: str | None
-    started_at: datetime
-    finished_at: datetime | None
+    started_at: UtcTimestamp
+    finished_at: UtcTimestamp | None
 
 
 class EventRead(BaseModel):
@@ -119,7 +120,7 @@ class EventRead(BaseModel):
     seq: int
     type: str
     payload: dict
-    occurred_at: datetime
+    occurred_at: UtcTimestamp
 
 
 class ArtifactRead(BaseModel):

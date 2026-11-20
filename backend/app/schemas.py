@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import (
@@ -12,6 +11,7 @@ from pydantic import (
 )
 
 from app.core.network import safe_api_url
+from app.db import UtcTimestamp
 
 
 class ProviderKeyUpdate(BaseModel):
@@ -143,7 +143,7 @@ class VoiceRead(BaseModel):
     reference_text: str
     style_prompt: str
     duration_seconds: float
-    created_at: datetime
+    created_at: UtcTimestamp
 
 
 class SpeechPreview(BaseModel):
@@ -170,7 +170,7 @@ class SpeechJobRead(BaseModel):
     error: str | None
     duration_seconds: float | None
     generation_seconds: float | None
-    created_at: datetime
+    created_at: UtcTimestamp
 
 
 class MessageSpeechRead(SpeechJobRead):

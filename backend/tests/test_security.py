@@ -1,6 +1,5 @@
 import os
 import sqlite3
-from threading import Lock
 
 import httpx
 import pytest
@@ -260,12 +259,7 @@ def test_cannot_delete_a_turn_from_another_conversation(client):
 def test_busy_resources_block_destructive_mutations(client):
     pid, cid = provider(client), conversation(client)
     service = client.app.state.chat_service
-    provider_lock, conversation_lock = Lock(), Lock()
-    service._provider_locks[pid] = provider_lock
-    service._locks[cid] = conversation_lock
-    provider_lock.acquire()
-    conversation_lock.acquire()
-    try:
+    with service.provider_guard(pid), service.conversation_guard(cid):
         assert client.delete(f"/api/v1/providers/{pid}", headers=HEADERS).status_code == 409
         assert (
             client.put(
@@ -278,9 +272,6 @@ def test_busy_resources_block_destructive_mutations(client):
             == 409
         )
         assert client.delete(f"/api/v1/conversations/{cid}", headers=HEADERS).status_code == 409
-    finally:
-        provider_lock.release()
-        conversation_lock.release()
 
 
 def test_wechat_history_not_deleted_by_debug_operations(client):

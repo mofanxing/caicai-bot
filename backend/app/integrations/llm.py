@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from threading import Lock
 from urllib.parse import urlsplit
 
 import httpx
@@ -81,10 +82,14 @@ class OpenAICompatibleClient:
     def __init__(self, timeout: float, vault: SecretVault | None = None):
         self.timeout = timeout
         self.vault = vault
+        self._cache_lock = Lock()
         self._responses_models: set[tuple[str, str, str]] = set()
 
     def forget_provider(self, provider_id: str):
-        self._responses_models = {key for key in self._responses_models if key[0] != provider_id}
+        with self._cache_lock:
+            self._responses_models = {
+                key for key in self._responses_models if key[0] != provider_id
+            }
 
     def _credentials(self, provider: Provider):
         if not safe_api_url(provider.base_url):
@@ -155,11 +160,13 @@ class OpenAICompatibleClient:
 
     def stream(self, provider: Provider, model: str, messages: list[dict]):
         cache_key = (provider.id, provider.base_url, model)
-        responses = cache_key in self._responses_models
+        with self._cache_lock:
+            responses = cache_key in self._responses_models
         try:
             yield from self._stream(provider, model, messages, responses)
         except _ResponsesProtocolRequired:
-            self._responses_models.add(cache_key)
+            with self._cache_lock:
+                self._responses_models.add(cache_key)
             yield from self._stream(provider, model, messages, True)
 
     def _stream(self, provider, model, messages, responses):
@@ -266,7 +273,9 @@ class OpenAICompatibleClient:
 
     def complete(self, provider: Provider, model: str, messages: list[dict]) -> str:
         cache_key = (provider.id, provider.base_url, model)
-        if cache_key in self._responses_models:
+        with self._cache_lock:
+            responses = cache_key in self._responses_models
+        if responses:
             return self._complete_responses(provider, model, messages)
         try:
             payload = self._request(
@@ -277,7 +286,8 @@ class OpenAICompatibleClient:
             )
         except _ResponsesProtocolRequired:
             text = self._complete_responses(provider, model, messages)
-            self._responses_models.add(cache_key)
+            with self._cache_lock:
+                self._responses_models.add(cache_key)
             return text
         try:
             content = payload["choices"][0]["message"]["content"]

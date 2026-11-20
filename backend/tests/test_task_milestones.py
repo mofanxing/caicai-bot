@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from test_deepseek import deepseek as deepseek
 from test_task_experience import HEADERS, configure_model
 
@@ -206,3 +206,31 @@ def test_queued_obsolete_progress_skips_synthesis(client, milestone, monkeypatch
     assert calls == []
     with service.session_factory() as db:
         assert db.get(SpeechJob, job_id) is None
+
+
+def test_cooldown_and_incremental_scan_skip_old_events(milestone):
+    service, task, attempt, monitor = milestone
+    with service.transaction() as db:
+        current = service.find(db, task.id)
+        for _ in range(300):
+            service.event(db, current, "progress", {"message": "old output"})
+    monitor.tick()
+    loaded = []
+
+    def loaded_event(row, context):
+        loaded.append(row.seq)
+
+    event.listen(TaskEvent, "load", loaded_event)
+    try:
+        monitor.tick()
+        # During cooldown only the durable report marker is read.
+        assert len(loaded) == 1
+        advance(service, task)
+        service.record(task.id, attempt.id, "progress", {"kind": "tool_call", "command": "pytest"})
+        loaded.clear()
+        monitor.tick()
+        # A new checkpoint can be found without loading the 300 older steps.
+        assert len(loaded) < 10
+    finally:
+        event.remove(TaskEvent, "load", loaded_event)
+    assert [e.payload["milestone"] for e in reports(service, task)] == ["started", "checking"]

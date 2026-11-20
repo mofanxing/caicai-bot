@@ -113,7 +113,7 @@ Python 命令按机器的安装情况替换，版本须满足要求。当前仅�
 
 删除接口：DELETE /api/v1/providers/{id}、DELETE /api/v1/conversations/{id}/messages/{message_id}、DELETE /api/v1/conversations/{id}/messages、DELETE /api/v1/conversations/{id}。聊天删除支持 debug / desktop 本地会话，不开放微信会话删除。替换密钥使用 PUT /api/v1/providers/{id}/key，请求体为 {"api_key":"新的密钥"}。
 
-当前为单进程保护；同一会话或同一中转站正在请求时，冲突的操作返回 409，稍后重试。
+单进程内，不同会话可以同时使用同一中转站生成回复。同一会话生成期间再次发送消息会返回 `409 conversation_busy`。中转站有在途请求时，删除站点或替换密钥会返回 `409 provider_busy`，等请求结束后即可重试。
 
 ### Responses 协议兼容
 

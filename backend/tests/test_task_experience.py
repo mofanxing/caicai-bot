@@ -1,4 +1,5 @@
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
@@ -130,6 +131,9 @@ def test_retention_preserves_live_and_unreviewed_tasks(client, experience, statu
             )
         )
         event.occurred_at = utc_now() - timedelta(days=5, seconds=1)
+    listed = client.get("/api/v1/tasks", headers=HEADERS).json()
+    assert [row["id"] for row in listed] == ([] if removed else [task.id])
+    # Reading the list leaves physical cleanup to the maintenance pass.
     assert service.prune_history() == int(removed)
 
 
@@ -377,3 +381,110 @@ def test_recent_terminal_history_stays_until_five_days(client, experience):
         )
         event.occurred_at = utc_now() - timedelta(days=5, hours=1)
     assert service.prune_history() == 1
+
+
+def test_task_timestamps_round_trip_via_sqlite(client, experience):
+    _, worker, _, payload = experience
+    created = client.post("/api/v1/tasks", headers=HEADERS, json=payload).json()
+    worker.run_once()
+    path = "/api/v1/tasks/" + created["id"]
+    detail = client.get(path, headers=HEADERS).json()
+    assert created["created_at"] == detail["task"]["created_at"]
+    attempt = detail["attempts"][0]
+    events = client.get(path + "/events", headers=HEADERS).json()
+    timestamps = [
+        created["created_at"],
+        detail["task"]["updated_at"],
+        attempt["started_at"],
+        attempt["finished_at"],
+        events[0]["occurred_at"],
+    ]
+    assert all(value.endswith("Z") for value in timestamps)
+
+
+def test_provider_serves_two_chats_during_generation(client, experience, monkeypatch):
+    service, _, _, payload = experience
+    cid = payload["conversation_id"]
+    pid = configure_model(client, service, cid)
+    with service.transaction() as db:
+        second = Conversation(
+            channel="desktop",
+            account_id="local",
+            peer_id="second",
+            provider_id=pid,
+            model_id="chat-model",
+        )
+        db.add(second)
+        db.flush()
+        other_id = second.id
+    entered, release = threading.Event(), threading.Event()
+
+    def complete(provider, model, messages):
+        if messages[-1]["content"] == "你好":
+            entered.set()
+            assert release.wait(8)
+        return "普通回复"
+
+    monkeypatch.setattr(client.app.state.chat_service.llm, "complete", complete)
+
+    def send(conversation, text):
+        return client.post(
+            f"/api/v1/desktop/conversations/{conversation}/messages",
+            headers=HEADERS,
+            json={"external_id": "test", "text": text},
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(send, cid, "你好")
+        try:
+            assert entered.wait(8)
+            assert send(other_id, "早上好").json()["assistant_text"] == "普通回复"
+            assert client.delete(f"/api/v1/providers/{pid}", headers=HEADERS).status_code == 409
+        finally:
+            release.set()
+        assert pending.result().status_code == 200
+
+
+@pytest.mark.parametrize("question", ["你好！", "为什么天空是蓝色的？", "什么是光合作用？"])
+def test_daily_chat_skips_classifier_but_followup_keeps_context(
+    client, experience, monkeypatch, question
+):
+    service, _, _, payload = experience
+    cid = payload["conversation_id"]
+    configure_model(client, service, cid)
+    llm = client.app.state.chat_service.llm
+    classifications = []
+
+    def classify(provider, model, messages):
+        classifications.append(json.loads(messages[-1]["content"]))
+        return '{"action":"clarify","reply":"你想在哪个项目上执行？"}'
+
+    monkeypatch.setattr(llm, "complete", classify)
+    monkeypatch.setattr(llm, "stream", lambda *_: iter(["你好呀"]))
+    url = f"/api/v1/desktop/conversations/{cid}/messages/stream"
+    assert (
+        "你好呀"
+        in client.post(url, headers=HEADERS, json={"external_id": "1", "text": question}).text
+    )
+    assert not classifications
+    assert (
+        "哪个项目"
+        in client.post(
+            url, headers=HEADERS, json={"external_id": "2", "text": "就按刚才说的做"}
+        ).text
+    )
+    assert classifications[0]["history"][-1]["user"] == question
+
+
+def test_pruning_runs_once_per_maintenance_interval(client, experience, monkeypatch):
+    service, _, _, _ = experience
+    monitor = client.app.state.task_notifications
+    monitor.next_history_prune = 0
+    calls = []
+    monkeypatch.setattr(service, "prune_history", lambda: calls.append(True))
+    monitor.tick()
+    monitor.tick()
+    assert calls == [True]
+    monitor.next_history_prune = 0
+    monitor.tick()
+    assert calls == [True, True]

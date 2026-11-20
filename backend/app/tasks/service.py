@@ -3,7 +3,7 @@ import json
 from contextlib import contextmanager
 from datetime import timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, select
 
 from app.core.errors import ServiceError
 from app.models import (
@@ -150,24 +150,24 @@ class TaskService:
             project.registered = False
         return {"deleted": True}
 
+    @staticmethod
+    def expired_history():
+        # Later reports do not extend retention. Keep interruptions until reviewed.
+        finished = select(TaskEvent.id).where(
+            TaskEvent.task_id == Task.id,
+            TaskEvent.type == "task.finished",
+            TaskEvent.occurred_at < utc_now() - timedelta(days=5),
+        )
+        return and_(
+            Task.status.in_(TERMINAL),
+            (Task.status != "interrupted")
+            | Task.reason.is_not_distinct_from("interruption_acknowledged"),
+            finished.exists(),
+        )
+
     def prune_history(self):
-        cutoff = utc_now() - timedelta(days=5)
         with self.transaction() as db:
-            # Report generation must not extend retention. Unreviewed interruptions
-            # remain visible until their recorded processes have been checked.
-            finished = select(TaskEvent.task_id).where(
-                TaskEvent.type == "task.finished", TaskEvent.occurred_at < cutoff
-            )
-            ids = list(
-                db.scalars(
-                    select(Task.id).where(
-                        Task.status.in_(TERMINAL),
-                        Task.id.in_(finished),
-                        (Task.status != "interrupted")
-                        | (Task.reason == "interruption_acknowledged"),
-                    )
-                )
-            )
+            ids = db.scalars(select(Task.id).where(self.expired_history())).all()
             if ids:
                 for model in (TaskArtifact, TaskEvent, TaskAttempt, Task):
                     key = model.id if model is Task else model.task_id

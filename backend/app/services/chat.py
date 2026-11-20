@@ -24,7 +24,8 @@ class ChatService:
         self.task_intents = None
         self._locks = {}
         self._locks_guard = Lock()
-        self._provider_locks = {}
+        self._provider_readers: dict[str, int] = {}
+        self._provider_writers: set[str] = set()
 
     @contextmanager
     def conversation_guard(self, conversation_id: str):
@@ -38,18 +39,28 @@ class ChatService:
             lock.release()
 
     @contextmanager
-    def provider_guard(self, provider_id: str | None):
+    def provider_guard(self, provider_id: str | None, *, exclusive: bool = False):
         if not provider_id:
             yield
             return
         with self._locks_guard:
-            lock = self._provider_locks.setdefault(provider_id, Lock())
-        if not lock.acquire(blocking=False):
-            raise ServiceError("provider_busy", "该中转站正在处理请求，请稍后再操作", 409)
+            readers = self._provider_readers.get(provider_id, 0)
+            if provider_id in self._provider_writers or (exclusive and readers):
+                raise ServiceError("provider_busy", "该中转站正在处理请求，请稍后再操作", 409)
+            if exclusive:
+                self._provider_writers.add(provider_id)
+            else:
+                self._provider_readers[provider_id] = readers + 1
         try:
             yield
         finally:
-            lock.release()
+            with self._locks_guard:
+                if exclusive:
+                    self._provider_writers.remove(provider_id)
+                else:
+                    self._provider_readers[provider_id] -= 1
+                    if not self._provider_readers[provider_id]:
+                        del self._provider_readers[provider_id]
 
     def handle(
         self, db: Session, conversation: Conversation, incoming: IncomingMessage, on_event=None

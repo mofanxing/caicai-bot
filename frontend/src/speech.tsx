@@ -252,6 +252,8 @@ export function MessageSpeech({ api, conversationId, messageId, initialJobId, jo
   const [generatedIds, setGeneratedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [manualRead, setManualRead] = useState(false);
+  const [activated, setActivated] = useState(!!autoPlay);
+  useEffect(() => { if (autoPlay) setActivated(true); }, [autoPlay]);
   const { message } = AntApp.useApp();
   useEffect(() => { setJobId(initialJobId); }, [initialJobId]);
   async function generate() {
@@ -267,6 +269,13 @@ export function MessageSpeech({ api, conversationId, messageId, initialJobId, jo
     finally { setLoading(false); }
   }
   const ids = generatedIds.length ? generatedIds : jobIds?.length ? jobIds : jobId ? [jobId] : [];
+  if (ids.length && !activated && !autoPlay && !manualRead) {
+    return <Button className="read-message" size="small" type="text" icon={<SoundOutlined />} onClick={() => {
+      void prepareSpeechPlayback().catch(() => {});
+      stopSpeechPlayback();
+      setManualRead(true);
+    }}>开始朗读</Button>;
+  }
   return ids.length ? <SpeechPlaylist api={api} jobIds={ids} autoPlay={autoPlay || manualRead} streaming={streaming} playbackMode={playbackMode} />
     : canGenerate ? <Button className="read-message" size="small" type="text" icon={<SoundOutlined />} loading={loading} onClick={generate}>用当前音色朗读</Button> : null;
 }
