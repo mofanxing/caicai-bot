@@ -1,0 +1,39 @@
+{
+  "pets": [{
+    "id": "caicai",
+    "name": "蔡蔡",
+    "size": 320,
+    "sizePercent": 20,
+    "balanceEnabled": false,
+    "whisperEnabled": false,
+    "workStatusEnabled": false,
+    "fixedEnabled": false,
+    "display": "none",
+    "position": { "corner": "bottom-right", "marginX": 48, "marginY": 24 }
+  }],
+  "whisperPrompt": "你是温柔、机灵、有一点俏皮的桌面伙伴。陪用户聊天、认真帮忙，表达自然简短，不替用户编造执行结果。",
+  "memes": {},
+  "whisperImageEnabled": false,
+  "chatImageEnabled": false,
+  "animationWeights": { "idle": 24, "turn": 3, "move": 2 },
+  "animations": {
+    "idle": ["待机呼吸"],
+    "turn": ["轻轻张望"],
+    "drag": ["悬空摇摆"],
+    "clicks": ["开心回应", "轻轻张望"],
+    "moves": {
+      "default": { "minDist": 35, "maxDist": 100, "margin": 24, "leadSec": 0.2, "tailSec": 0.2 },
+      "actions": [{ "name": "轻步移动" }]
+    },
+    "categories": [{ "id": "蔡蔡的小动作", "weight": 2, "actions": ["开心回应", "轻轻张望"] }],
+    "events": {
+      "balance": ["轻轻张望", "轻轻张望", "待机呼吸", "认真思考", "认真思考", "认真思考"],
+      "whisper": ["开口说话"],
+      "workStatus": ["认真思考", "认真思考", "待机呼吸", "轻轻张望", "开心回应", "轻轻张望"]
+    },
+    "sleep": [{ "start": ["慢慢入睡"], "loop": ["安静小憩"], "end": ["睡醒啦"] }]
+  },
+  "sleepStartTexts": ["我眯一小会儿，待会儿见。"],
+  "sleepEndTexts": ["睡醒啦，蔡蔡回来陪你了。"],
+  "sleepRefuseTexts": ["唔……再让我睡一小会儿。"]
+}

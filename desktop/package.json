@@ -10,6 +10,7 @@
     "setup": "node scripts/setup.mjs",
     "build": "node scripts/build.mjs",
     "start": "node scripts/start.mjs",
+    "character:caicai": "node scripts/install-caicai.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:chat": "node scripts/chat-smoke.mjs",
     "smoke:voice": "node scripts/voice-smoke.mjs",
